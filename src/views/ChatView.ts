@@ -1,5 +1,6 @@
 import { ItemView, WorkspaceLeaf, MarkdownRenderer, Notice, TFile, setIcon } from 'obsidian';
-import { LLMService, createLLMService } from '../services/LLMService';
+import { LLMService, createLLMService, ServerStatus } from '../services/LLMService';
+import { setupInstructions, welcomeNoModelsMessage } from '../services/modelGuidance';
 import { PiChatAgent, ChatAgentEvent } from '../agent/pi/PiChatAgent';
 import { describeToolCall, summarizeToolResult } from '../agent/pi/toolActivity';
 import { LoggingUtility } from '../utils/LoggingUtility';
@@ -57,6 +58,8 @@ interface ObsidianApp {
 		openTabById: (tabId: string) => void;
 	};
 }
+
+const WELCOME_GREETING = `What's on your mind?`;
 
 export class ChatView extends ItemView {
 	private messages: ChatMessage[] = [];
@@ -964,27 +967,23 @@ export class ChatView extends ItemView {
 						// Update LLM service with current settings
 						this.updateLLMServiceFromSettings();
 
-						// Test connection
-						const testResult = await this.llmService.testConnection();
-
-						if (testResult.success) {
-							// Connection successful - update the welcome message
-							const welcomeMessage = this.messages.find(m => m.id === 'welcome');
-							if (welcomeMessage) {
-								welcomeMessage.content = 'What\'s on your mind?';
-								// Re-render the message
-								this.messageContainer.empty();
-								for (const msg of this.messages) {
-									await this.renderMessage(msg);
-								}
+						// Check again; the instructions change if the problem did (e.g. server now up, but no model).
+						const welcomeText = await ChatView.getWelcomeMessage(this.llmService);
+						const connected = welcomeText === WELCOME_GREETING;
+						const welcomeMessage = this.messages.find(m => m.id === 'welcome');
+						if (welcomeMessage && welcomeMessage.content !== welcomeText) {
+							welcomeMessage.content = welcomeText;
+							this.messageContainer.empty();
+							for (const msg of this.messages) {
+								await this.renderMessage(msg);
 							}
-							new Notice('✅ Connection successful! You can now start chatting.', 3000);
-						} else {
-							// Connection failed
-							new Notice('❌ Connection failed. Please check your server settings.', 3000);
+						} else if (!connected) {
 							refreshButton.textContent = '🔄 Test connection';
 							refreshButton.disabled = false;
 						}
+						new Notice(connected
+							? '✅ Connection successful! You can now start chatting.'
+							: '❌ Not ready yet. Follow the steps in the chat and try again.', 3000);
 					} catch (error) {
 						LoggingUtility.error('Error testing connection:', error);
 						new Notice('❌ Connection failed. Please check your server settings.', 3000);
@@ -1146,7 +1145,8 @@ export class ChatView extends ItemView {
 		this.pendingStreamingRender.clear();
 		this.streamingRenderInFlight.clear();
 
-		// Add new welcome message
+		// Add new welcome message, checking the server the settings point at now
+		this.updateLLMServiceFromSettings();
 		await this.addMessage({
 			id: 'welcome',
 			role: 'assistant',
@@ -1177,37 +1177,23 @@ export class ChatView extends ItemView {
 		});
 	}
 
+	/**
+	 * The first message in a chat: a greeting when the server is usable, otherwise what to do
+	 * (start LM Studio, or download a model).
+	 */
 	private static async getWelcomeMessage(llmService: LLMService): Promise<string> {
-		// Test the connection
-		const testResult = await llmService.testConnection();
-
-		if (testResult.success) {
-			return `What's on your mind?`;
-		} else {
-			return `## 🚀 Welcome to Private AI!
-
-It looks like your local LLM server isn't running yet. Here's how to get started:
-
-### Getting Started
-
-1. **Download and Install LM Studio** from [lmstudio.ai](https://lmstudio.ai)
-3. **Download a model** 
-   * We recommend:
-	   * \`Gemma 4 E4B\` (recommended)
-	   * \`Gemma 4 E2B\`
-	   * Select the largest parameter size that LM Studio says can fit on your GPU
-4. **Load the model** in LM Studio
-   * Once the model is downloaded, select the model in the top center toolbar to load it
-   * **IMPORTANT**: *Do not load more than one LLM model at a time, it will cause connection failed errors*
-5. **Start the local server**:
-- Click the "Developer" tab on the left
-- Click Settings:
-   - Make sure "CORS" is enabled
-   - Ensure the default port number 1234 is used
-- In the Status box in the top left
-   - Click the radio button to start the server
-
-Once your server is running, click the test connection button below.`;
+		let status: ServerStatus | undefined;
+		try {
+			status = await llmService.getServerStatus?.();
+		} catch (error) {
+			LoggingUtility.warn('Could not check the LLM server:', error);
 		}
+		if (status?.state === 'ready') return WELCOME_GREETING;
+		if (status?.state === 'no-models') return welcomeNoModelsMessage();
+		if (status?.state === 'offline') return setupInstructions();
+
+		// A server that can't list its models: find out by asking it something.
+		const testResult = await llmService.testConnection();
+		return testResult.success ? WELCOME_GREETING : setupInstructions();
 	}
 }

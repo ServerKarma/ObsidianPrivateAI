@@ -26,7 +26,11 @@ export interface PiChatAgentDeps {
 	settings: () => PiChatSettings;
 	/** Tools for this run (from the built-in MCP server). Empty array = plain chat. */
 	loadTools: () => Promise<AgentTool[]>;
-	/** Picks a model id when none is configured (e.g. the model loaded in LM Studio). */
+	/**
+	 * Checks the server before each turn and names the model to use (e.g. the one loaded in
+	 * LM Studio). Throws a ChatAgentError with instructions when the server can't be used;
+	 * returns undefined to fall back to the configured model.
+	 */
 	resolveModelId?: () => Promise<string | undefined>;
 	/** Override for tests; defaults to Pi's streamSimple. */
 	streamFn?: StreamFn;
@@ -128,7 +132,7 @@ export class PiChatAgent {
 
 	async send(userText: string, onEvent: (e: ChatAgentEvent) => void, signal?: AbortSignal, options: ChatTurnOptions = {}): Promise<string> {
 		const settings = this.deps.settings();
-		const modelId = settings.model?.trim() || (await this.deps.resolveModelId?.()) || '';
+		const modelId = (await this.deps.resolveModelId?.()) || settings.model?.trim() || '';
 		if (!modelId) {
 			throw new ChatAgentError('No model is loaded. Load a chat model in LM Studio, or pick one in the Private AI settings.');
 		}
