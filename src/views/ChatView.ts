@@ -108,16 +108,6 @@ export class ChatView extends ItemView {
 		// Create button container for header buttons
 		const headerButtons = header.createEl('div', { cls: 'local-llm-header-buttons' });
 
-		// Create new chat button
-		const newChatButton = headerButtons.createEl('button', {
-			cls: 'local-llm-new-chat-button',
-			text: 'New chat',
-			attr: { 'aria-label': 'Start new chat', 'type': 'button' }
-		});
-		newChatButton.addEventListener('click', async () => {
-			await this.startNewChat();
-		});
-
 		// Create settings button
 		const settingsButton = headerButtons.createEl('button', {
 			cls: 'local-llm-settings-button',
@@ -132,6 +122,16 @@ export class ChatView extends ItemView {
 				settingTab.open();
 				settingTab.openTabById('private-ai');
 			}
+		});
+
+		// New chat sits on the right
+		const newChatButton = headerButtons.createEl('button', {
+			cls: 'local-llm-new-chat-button',
+			text: 'New chat',
+			attr: { 'aria-label': 'Start new chat', 'type': 'button' }
+		});
+		newChatButton.addEventListener('click', async () => {
+			await this.startNewChat();
 		});
 
 		// Create main chat container with flexbox layout

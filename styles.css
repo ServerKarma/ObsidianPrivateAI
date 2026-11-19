@@ -544,8 +544,13 @@
 }
 
 /* Keep the settings gear at the right edge of the header */
-.local-llm-header-buttons .local-llm-settings-button {
+.local-llm-header-buttons .local-llm-new-chat-button {
 	margin-left: auto;
+	margin-right: 0;
+}
+
+.local-llm-header-buttons .local-llm-settings-button {
+	margin-left: 0;
 }
 
 .local-llm-new-chat-button {
