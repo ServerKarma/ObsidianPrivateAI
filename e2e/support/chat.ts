@@ -41,7 +41,8 @@ export async function newChatWelcome(): Promise<string> {
             if (messages.length !== 1) return "";
             return (messages[0].querySelector(".local-llm-message-content")?.textContent ?? "").trim();
         }, CHAT);
-        return text.length > 0;
+        // The pane first shows a placeholder while it checks the server.
+        return text.length > 0 && !text.startsWith("Checking your local AI server");
     }, { timeout: 20000, timeoutMsg: "the new chat never showed a welcome message" });
     return text;
 }
