@@ -6,7 +6,7 @@ import { ObsidianVaultAdapter } from './ObsidianVaultAdapter';
 import { ImageProcessResult, ImageTextCache, ImageTextSource } from './ImageTextCache';
 import { VaultSearch } from '../search/VaultSearch';
 import { createVaultTools, describeWorkspace, VaultToolDefinition } from '../tools/vaultTools';
-import { createModalConfirm } from './ConfirmChangeModal';
+import { askToEnableChanges, createModalConfirm } from './ConfirmChangeModal';
 import { createVaultMcpServer } from '../mcp/vaultMcpServer';
 import { connectInProcess } from '../mcp/inProcessClient';
 import { loadMcpTools } from '../pi/mcpTools';
@@ -24,6 +24,8 @@ export interface AgentRuntimeOptions {
 	/** Plugin folder, for the image text cache. */
 	pluginDir: string;
 	settings: () => AgentRuntimeSettings;
+	/** Turns the "allow note changes" setting on and saves it, after the user said yes. */
+	enableNoteChanges: () => Promise<void>;
 	log?: (message: string, error?: unknown) => void;
 }
 
@@ -58,7 +60,25 @@ export class AgentRuntime {
 		return createVaultMcpServer(this.tools, {
 			version: this.options.version,
 			allowWrites: () => this.options.settings().allowNoteChanges,
+			requestWrites: (tool) => this.askToEnableChanges(tool.title),
 		});
+	}
+
+	private enabling: Promise<boolean> | null = null;
+
+	/** One question at a time: tool calls that arrive while it is open share the answer. */
+	private askToEnableChanges(wants: string): Promise<boolean> {
+		if (!this.enabling) {
+			this.enabling = askToEnableChanges(this.options.app, 'Private AI', wants)
+				.then(async (yes) => {
+					if (yes) await this.options.enableNoteChanges();
+					return yes;
+				})
+				.finally(() => {
+					this.enabling = null;
+				});
+		}
+		return this.enabling;
 	}
 
 	private async getClient(): Promise<Client> {

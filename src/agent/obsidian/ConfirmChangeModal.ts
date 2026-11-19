@@ -61,6 +61,53 @@ class ConfirmChangeModal extends Modal {
 	}
 }
 
+/** Asks once whether the read-only agent may start changing notes. Anything but "Yes" keeps it read-only. */
+class EnableChangesModal extends Modal {
+	private decided = false;
+
+	constructor(app: App, private readonly source: string, private readonly wants: string, private readonly resolve: (ok: boolean) => void) {
+		super(app);
+	}
+
+	onOpen(): void {
+		const { contentEl } = this;
+		contentEl.addClass('local-llm-confirm-change');
+		contentEl.setAttr('data-testid', 'enable-changes');
+		this.setTitle(`Let ${this.source} change your notes?`);
+		contentEl.createEl('p', { text: `${this.source} is read-only right now: it can search and read your notes, but not change them. It is trying to use "${this.wants}".` });
+		contentEl.createEl('p', { text: 'Do you want to turn on editing, deleting and moving notes? You will still be asked to approve every change, and you can turn this off again in the settings.' });
+
+		new Setting(contentEl)
+			.addButton((b) => b
+				.setButtonText('No, keep it read-only')
+				.then((btn) => btn.buttonEl.setAttr('data-testid', 'enable-changes-no'))
+				.onClick(() => this.finish(false)))
+			.addButton((b) => b
+				.setButtonText('Yes, turn it on')
+				.setCta()
+				.then((btn) => btn.buttonEl.setAttr('data-testid', 'enable-changes-yes'))
+				.onClick(() => this.finish(true)));
+	}
+
+	private finish(ok: boolean): void {
+		if (this.decided) return;
+		this.decided = true;
+		this.resolve(ok);
+		this.close();
+	}
+
+	onClose(): void {
+		// Esc or clicking outside counts as No.
+		this.finish(false);
+		this.contentEl.empty();
+	}
+}
+
+/** Shows the "turn on note changes?" question. `wants` names what the agent tried to do. */
+export function askToEnableChanges(app: App, source: string, wants: string): Promise<boolean> {
+	return new Promise<boolean>((resolve) => new EnableChangesModal(app, source, wants, resolve).open());
+}
+
 /**
  * Confirmation for every write tool. Requests are shown one at a time, so
  * concurrent tool calls never stack dialogs.
