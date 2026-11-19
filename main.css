@@ -427,15 +427,16 @@
     align-self: stretch;
   }
 }
-.local-llm-chat-header h4 {
-  margin: 0;
-  font-size: 1.1em;
-  font-weight: 600;
-}
 .local-llm-header-buttons {
   display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  min-width: 0;
   gap: 8px;
   align-items: center;
+}
+.local-llm-header-buttons .local-llm-settings-button {
+  margin-left: auto;
 }
 .local-llm-new-chat-button {
   background: none;

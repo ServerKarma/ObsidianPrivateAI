@@ -88,7 +88,9 @@ describe('Obsidian chat smoke test', () => {
     await view.onOpen();
 
     const content = view.containerEl.children[1].textContent ?? '';
-    expect(content).toContain('Private AI chat');
+    expect(content).not.toContain('Private AI chat');
+    expect(view.containerEl.querySelector('.local-llm-chat-header h4')).toBeNull();
+    expect(view.containerEl.querySelector('.local-llm-new-chat-button')).not.toBeNull();
     expect(content).toContain("What's on your mind?");
   });
 

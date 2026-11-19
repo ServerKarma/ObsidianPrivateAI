@@ -111,9 +111,8 @@ export class ChatView extends ItemView {
 		container.empty();
 		container.addClass('local-llm-full-height');
 
-		// Header with title and settings button
+		// Header: chat controls only (the pane's tab already names the view)
 		const header = container.createEl('div', { cls: 'local-llm-chat-header' });
-		header.createEl('h4', { text: 'Private AI chat' });
 
 		// Create button container for header buttons
 		const headerButtons = header.createEl('div', { cls: 'local-llm-header-buttons' });
