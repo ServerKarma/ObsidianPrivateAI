@@ -3,7 +3,9 @@
   "compilerOptions": {
     "types": ["@wdio/globals/types", "mocha", "wdio-obsidian-service"],
     "module": "ESNext",
-    "moduleResolution": "bundler"
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "noEmit": true
   },
   "include": ["./**/*.ts", "./**/*.mts"]
 }

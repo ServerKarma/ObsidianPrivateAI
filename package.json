@@ -10,6 +10,7 @@
     "test:watch": "vitest",
     "eval": "wdio run e2e/wdio.conf.mts",
     "eval:offline": "E2E_OFFLINE=1 wdio run e2e/wdio.conf.mts",
+    "eval:live": "wdio run e2e/wdio.live.conf.mts",
     "version": "node version-bump.mjs",
     "release": "npm run build && node version-bump.mjs"
   },
