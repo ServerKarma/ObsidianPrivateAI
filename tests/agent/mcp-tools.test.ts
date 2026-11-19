@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { createVaultTools } from '../../src/agent/tools/vaultTools';
+import { createVaultTools, ChangeRequest, DECLINED_MESSAGE } from '../../src/agent/tools/vaultTools';
 import { createVaultMcpServer } from '../../src/agent/mcp/vaultMcpServer';
 import { connectInProcess } from '../../src/agent/mcp/inProcessClient';
 import { VaultSearch } from '../../src/agent/search/VaultSearch';
@@ -20,10 +20,18 @@ afterEach(async () => {
 	client = null;
 });
 
-async function setup(allowWrites = true) {
+async function setup(allowWrites = true, answer: boolean | (() => Promise<boolean>) = true) {
 	const vault = new InMemoryVault(FIXTURE);
 	const search = new VaultSearch(vault, () => ({ excludedFolders: ['Private'] }));
-	const tools = createVaultTools({ vault, search });
+	const asked: ChangeRequest[] = [];
+	const tools = createVaultTools({
+		vault,
+		search,
+		confirm: async (r) => {
+			asked.push(r);
+			return typeof answer === 'function' ? answer() : answer;
+		},
+	});
 	let writes = allowWrites;
 	const server = createVaultMcpServer(tools, { version: 'test', allowWrites: () => writes });
 	client = await connectInProcess(server, 'test');
@@ -32,7 +40,7 @@ async function setup(allowWrites = true) {
 		const text = (r.content as Array<{ text: string }>).map((c) => c.text).join('\n');
 		return { text, isError: !!r.isError };
 	};
-	return { vault, call, setWrites: (v: boolean) => (writes = v) };
+	return { vault, call, asked, setWrites: (v: boolean) => (writes = v) };
 }
 
 describe('built-in MCP server', () => {
@@ -88,8 +96,8 @@ describe('built-in MCP server', () => {
 		expect(page.text).toContain('start_line 16');
 	});
 
-	it('creates, edits, appends, moves and trashes notes', async () => {
-		const { vault, call } = await setup();
+	it('creates, edits, appends, moves and trashes notes once each change is approved', async () => {
+		const { vault, call, asked } = await setup();
 		expect((await call('create_note', { path: 'Projects/Garden', content: 'Plant tomatoes' })).text).toBe('Created Projects/Garden.md (14 characters).');
 		expect((await call('create_note', { path: 'Projects/Garden.md', content: 'x' })).isError).toBe(true);
 
@@ -106,6 +114,48 @@ describe('built-in MCP server', () => {
 		await call('delete_note', { path: 'Archive/Garden.md' });
 		expect(vault.trashed).toEqual(['Archive/Garden.md']);
 		expect((await call('create_note', { path: 'Private/new.md', content: 'x' })).text).toMatch(/excluded/);
+
+		expect(asked.map((r) => r.action)).toEqual(['create', 'edit', 'append', 'move', 'delete']);
+		expect(asked[1]).toMatchObject({ path: 'Projects/Garden.md', before: 'tomatoes', after: 'peppers' });
+		expect(asked[3]).toMatchObject({ path: 'Projects/Garden.md', toPath: 'Archive/Garden.md' });
+	});
+
+	it('changes nothing when a change is denied, or the confirmation fails', async () => {
+		for (const answer of [false, async () => { throw new Error('dialog crashed'); }] as const) {
+			const { vault, call } = await setup(true, answer as any);
+			const before = new Map(vault.files);
+			const attempts = [
+				await call('create_note', { path: 'New.md', content: 'x' }),
+				await call('edit_note', { path: 'Recipes/Sourdough.md', old_text: '500g', new_text: '1kg' }),
+				await call('append_to_note', { path: 'Recipes/Sourdough.md', content: 'more' }),
+				await call('move_note', { from: 'Recipes/Sourdough.md', to: 'Archive/Sourdough.md' }),
+				await call('delete_note', { path: 'Recipes/Sourdough.md' }),
+			];
+			for (const a of attempts) expect(a).toEqual({ isError: true, text: DECLINED_MESSAGE });
+			expect(vault.files).toEqual(before);
+			expect(vault.trashed).toEqual([]);
+		}
+	});
+
+	it('does not ask about changes that are invalid anyway, and never asks for reads', async () => {
+		const { call, asked } = await setup();
+		await call('edit_note', { path: 'Recipes/Sourdough.md', old_text: 'not in the note', new_text: 'x' });
+		await call('create_note', { path: 'Recipes/Sourdough.md', content: 'x' });
+		await call('search_notes', { query: 'water' });
+		await call('read_note', { path: 'Recipes/Sourdough.md' });
+		expect(asked).toEqual([]);
+	});
+
+	it('re-checks the note after approval in case it changed meanwhile', async () => {
+		let vaultRef: InMemoryVault | null = null;
+		const { vault, call } = await setup(true, async () => {
+			vaultRef!.set('Recipes/Sourdough.md', 'rewritten while the dialog was open');
+			return true;
+		});
+		vaultRef = vault;
+		const r = await call('edit_note', { path: 'Recipes/Sourdough.md', old_text: '500g', new_text: '1kg' });
+		expect(r.isError).toBe(true);
+		expect(await vault.read('Recipes/Sourdough.md')).toBe('rewritten while the dialog was open');
 	});
 
 	it('reports which notes are open', async () => {

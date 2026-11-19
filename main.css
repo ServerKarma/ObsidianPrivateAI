@@ -1098,3 +1098,21 @@
   padding: 4px 10px;
   line-height: 1.2;
 }
+.local-llm-confirm-change-title {
+  font-weight: var(--font-semibold);
+}
+.local-llm-confirm-change-label {
+  margin-top: var(--size-4-3);
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+.local-llm-confirm-change-preview {
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: var(--size-4-2);
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
+  font-size: var(--font-ui-small);
+}

@@ -21,7 +21,7 @@ afterEach(async () => {
 async function startHost() {
 	PORT += 1;
 	const vault = new InMemoryVault({ 'Home/Water Heater.md': 'Replaced on 2024-03-15' });
-	const tools = createVaultTools({ vault, search: new VaultSearch(vault) });
+	const tools = createVaultTools({ vault, search: new VaultSearch(vault), confirm: async () => true });
 	host = new McpHttpHost({ port: PORT, token: TOKEN, createServer: () => createVaultMcpServer(tools, { version: 't', allowWrites: () => false }) });
 	await host.start();
 	return host;

@@ -21,7 +21,7 @@ Enjoy!
 
 - **Easy Setup**: Easy setup and model swapping with LM Studio
 - **Cross Platform**: Supports for most modern Mac and Windows machines
-- **Agent that works your vault**: The AI searches, reads and (when you ask) creates, edits, moves or deletes notes itself, then cites the notes it used. It runs on the open-source [Pi](https://github.com/badlogic/pi-mono) agent harness.
+- **Agent that works your vault**: The AI searches and reads notes itself, then cites the notes it used. When you ask, it can also create, edit, move or delete notes, but every change opens a dialog showing exactly what will change, and nothing happens unless you click Allow. It runs on the open-source [Pi](https://github.com/badlogic/pi-mono) agent harness.
 - **No embeddings, no index database**: Notes are found with BM25 ranked search plus grep over the files on disk, so there's no embedding model to load and nothing to rebuild. Text in images can be read once by a vision model and searched too.
 - **Built-in MCP server**: The vault tools live in an MCP server inside the plugin. The chat uses it directly, and you can optionally share it on `127.0.0.1` (token protected) with other MCP clients such as LM Studio or Claude Desktop.
 - **Open Tab Context**: Focus your conversation on specific notes for focused insights

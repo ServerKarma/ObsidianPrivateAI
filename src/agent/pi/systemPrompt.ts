@@ -12,6 +12,7 @@ How to answer:
 
 Changing the vault:
 - Only create, edit, move or delete notes when the user asked for that change in their message.
+- Every change is shown to the user for approval. If a tool says the user declined, accept that and don't try again.
 - Prefer edit_note (exact replacement) over rewriting a whole note. Read the note first.
 - delete_note moves a note to the trash; only use it when the user explicitly asked to delete that note.`;
 

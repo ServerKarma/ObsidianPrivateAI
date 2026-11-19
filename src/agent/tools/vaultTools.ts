@@ -18,10 +18,36 @@ export interface VaultToolDefinition {
 	run(args: Record<string, unknown>): Promise<string>;
 }
 
+/** A change to the vault that a write tool wants to make, shown to the user for approval. */
+export interface ChangeRequest {
+	action: 'create' | 'edit' | 'append' | 'move' | 'delete';
+	/** Short sentence, e.g. "Create Projects/Garden.md". */
+	title: string;
+	path: string;
+	/** move: the destination. */
+	toPath?: string;
+	/** create/append: the text that will be written. */
+	content?: string;
+	/** edit: the passage being replaced and its replacement. */
+	before?: string;
+	after?: string;
+}
+
+/**
+ * Asks the user to approve one change. Resolves true only on an explicit yes.
+ * Every write tool calls this before touching the vault, for the chat agent and
+ * for outside MCP clients alike, so nothing is written without the user's say-so.
+ */
+export type ConfirmChange = (request: ChangeRequest) => Promise<boolean>;
+
 export interface VaultToolContext {
 	vault: VaultPort;
 	search: VaultSearch;
+	/** Required: there is no way to build the write tools without a confirmation step. */
+	confirm: ConfirmChange;
 }
+
+export const DECLINED_MESSAGE = 'The user declined this change, so nothing was changed. Do not retry it unless the user asks again.';
 
 const DEFAULT_READ_LINES = 400;
 const MAX_READ_CHARS = 24000;
@@ -56,7 +82,17 @@ function describeFile(f: VaultFileInfo): string {
 }
 
 export function createVaultTools(ctx: VaultToolContext): VaultToolDefinition[] {
-	const { vault, search } = ctx;
+	const { vault, search, confirm } = ctx;
+
+	const requireApproval = async (request: ChangeRequest): Promise<void> => {
+		let approved = false;
+		try {
+			approved = await confirm(request);
+		} catch {
+			approved = false;
+		}
+		if (approved !== true) throw new Error(DECLINED_MESSAGE);
+	};
 
 	/** Finds a visible note from a model-supplied path, tolerating a missing ".md" or a bare note name. */
 	const resolveNote = (input: string): VaultFileInfo => {
@@ -199,7 +235,7 @@ export function createVaultTools(ctx: VaultToolContext): VaultToolDefinition[] {
 		{
 			name: 'create_note',
 			title: 'Create note',
-			description: 'Create a new note. Fails if the note already exists. Folders are created as needed.',
+			description: 'Create a new note. The user is asked to approve it first. Fails if the note already exists. Folders are created as needed.',
 			inputSchema: schema(
 				{
 					path: Type.String({ description: 'Vault path for the new note; ".md" is added if missing' }),
@@ -211,6 +247,8 @@ export function createVaultTools(ctx: VaultToolContext): VaultToolDefinition[] {
 				const path = assertWritablePath(str(args, 'path'));
 				if (vault.getFile(path)) throw new Error(`A note already exists at ${path}. Use edit_note or append_to_note.`);
 				const content = typeof args.content === 'string' ? args.content : '';
+				await requireApproval({ action: 'create', title: `Create ${path}`, path, content });
+				if (vault.getFile(path)) throw new Error(`A note already exists at ${path}. Nothing was changed.`);
 				await vault.create(path, content);
 				return `Created ${path} (${content.length} characters).`;
 			},
@@ -219,7 +257,7 @@ export function createVaultTools(ctx: VaultToolContext): VaultToolDefinition[] {
 			name: 'edit_note',
 			title: 'Edit note',
 			description:
-				'Replace one exact passage in a note. old_text must appear exactly once; read the note first and copy it verbatim.',
+				'Replace one exact passage in a note. The user is asked to approve it first. old_text must appear exactly once; read the note first and copy it verbatim.',
 			inputSchema: schema(
 				{
 					path: Type.String(),
@@ -232,12 +270,19 @@ export function createVaultTools(ctx: VaultToolContext): VaultToolDefinition[] {
 				const file = resolveNote(str(args, 'path'));
 				const oldText = str(args, 'old_text');
 				const newText = typeof args.new_text === 'string' ? args.new_text : '';
+				const locate = (content: string): number => {
+					const first = content.indexOf(oldText);
+					if (first < 0) throw new Error(`old_text was not found in ${file.path}. Read the note and copy the passage exactly.`);
+					if (content.indexOf(oldText, first + 1) >= 0) {
+						throw new Error(`old_text appears more than once in ${file.path}. Include more surrounding text.`);
+					}
+					return first;
+				};
+				locate(await vault.read(file.path));
+				await requireApproval({ action: 'edit', title: `Edit ${file.path}`, path: file.path, before: oldText, after: newText });
+				// Re-read: the note may have changed while the user was deciding.
 				const content = await vault.read(file.path);
-				const first = content.indexOf(oldText);
-				if (first < 0) throw new Error(`old_text was not found in ${file.path}. Read the note and copy the passage exactly.`);
-				if (content.indexOf(oldText, first + 1) >= 0) {
-					throw new Error(`old_text appears more than once in ${file.path}. Include more surrounding text.`);
-				}
+				const first = locate(content);
 				await vault.modify(file.path, content.slice(0, first) + newText + content.slice(first + oldText.length));
 				return `Edited ${file.path}.`;
 			},
@@ -245,7 +290,7 @@ export function createVaultTools(ctx: VaultToolContext): VaultToolDefinition[] {
 		{
 			name: 'append_to_note',
 			title: 'Append to note',
-			description: 'Add text to the end of a note (creates the note if it does not exist).',
+			description: 'Add text to the end of a note (creates the note if it does not exist). The user is asked to approve it first.',
 			inputSchema: schema(
 				{
 					path: Type.String(),
@@ -263,9 +308,11 @@ export function createVaultTools(ctx: VaultToolContext): VaultToolDefinition[] {
 				}
 				if (!existing) {
 					const path = assertWritablePath(str(args, 'path'));
+					await requireApproval({ action: 'create', title: `Create ${path}`, path, content });
 					await vault.create(path, content);
 					return `Created ${path}.`;
 				}
+				await requireApproval({ action: 'append', title: `Add to the end of ${existing.path}`, path: existing.path, content });
 				const current = await vault.read(existing.path);
 				const sep = current.length === 0 || current.endsWith('\n') ? '' : '\n';
 				await vault.modify(existing.path, current + sep + content);
@@ -275,7 +322,7 @@ export function createVaultTools(ctx: VaultToolContext): VaultToolDefinition[] {
 		{
 			name: 'move_note',
 			title: 'Move or rename note',
-			description: 'Move or rename a note. Links to it are updated by Obsidian. Only do this when the user asked for it.',
+			description: 'Move or rename a note. The user is asked to approve it first. Links to it are updated by Obsidian. Only do this when the user asked for it.',
 			inputSchema: schema(
 				{
 					from: Type.String({ description: 'Current path' }),
@@ -288,6 +335,8 @@ export function createVaultTools(ctx: VaultToolContext): VaultToolDefinition[] {
 				const file = resolveNote(str(args, 'from'));
 				const to = assertWritablePath(str(args, 'to'));
 				if (vault.getFile(to)) throw new Error(`Something already exists at ${to}`);
+				await requireApproval({ action: 'move', title: `Move ${file.path} to ${to}`, path: file.path, toPath: to });
+				if (vault.getFile(to)) throw new Error(`Something already exists at ${to}. Nothing was changed.`);
 				await vault.rename(file.path, to);
 				return `Moved ${file.path} to ${to}.`;
 			},
@@ -296,12 +345,13 @@ export function createVaultTools(ctx: VaultToolContext): VaultToolDefinition[] {
 			name: 'delete_note',
 			title: 'Delete note',
 			description:
-				'Move a note to the trash (recoverable). Only do this when the user explicitly asked to delete that note.',
+				'Move a note to the trash (recoverable). The user is asked to approve it first. Only do this when the user explicitly asked to delete that note.',
 			inputSchema: schema({ path: Type.String() }),
 			readOnly: false,
 			destructive: true,
 			async run(args) {
 				const file = resolveNote(str(args, 'path'));
+				await requireApproval({ action: 'delete', title: `Move ${file.path} to the trash`, path: file.path });
 				await vault.trash(file.path);
 				return `Moved ${file.path} to the trash.`;
 			},

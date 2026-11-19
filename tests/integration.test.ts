@@ -102,7 +102,7 @@ let faux: FauxProviderRegistration;
 function createPluginStub(contextMode: string, files: Array<{ path: string; content: string }>) {
   const vault = new InMemoryVault(Object.fromEntries(files.map((f) => [f.path, f.content])));
   const search = new VaultSearch(vault);
-  const server = createVaultMcpServer(createVaultTools({ vault, search }), { version: 'test', allowWrites: () => true });
+  const server = createVaultMcpServer(createVaultTools({ vault, search, confirm: async () => true }), { version: 'test', allowWrites: () => true });
   const clientPromise = connectInProcess(server);
   const settings = {
     apiEndpoint: 'http://localhost:1234/v1/chat/completions',

@@ -6,6 +6,7 @@ import { ObsidianVaultAdapter } from './ObsidianVaultAdapter';
 import { ImageTextCache, ImageTextSource } from './ImageTextCache';
 import { VaultSearch } from '../search/VaultSearch';
 import { createVaultTools, VaultToolDefinition } from '../tools/vaultTools';
+import { createModalConfirm } from './ConfirmChangeModal';
 import { createVaultMcpServer } from '../mcp/vaultMcpServer';
 import { connectInProcess } from '../mcp/inProcessClient';
 import { McpHttpHost } from '../mcp/McpHttpHost';
@@ -49,7 +50,8 @@ export class AgentRuntime {
 		this.vault = new ObsidianVaultAdapter(app);
 		this.imageCache = new ImageTextCache(app, `${pluginDir}/image-text-cache.json`);
 		this.search = new VaultSearch(this.vault, () => settings(), this.imageCache);
-		this.tools = createVaultTools({ vault: this.vault, search: this.search });
+		// Every create/edit/move/delete asks the user in Obsidian first.
+		this.tools = createVaultTools({ vault: this.vault, search: this.search, confirm: createModalConfirm(app, () => 'Private AI') });
 	}
 
 	async init(): Promise<void> {

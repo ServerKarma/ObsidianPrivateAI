@@ -23,6 +23,10 @@ describe("Private AI agent in real Obsidian", function () {
                 const date = results[1].match(/replaced the water heater on (\d{4}-\d{2}-\d{2})/i)?.[1] ?? "unknown";
                 return { text: `You replaced the water heater on ${date}.` };
             }
+            if (/delete the garden note/i.test(question)) {
+                if (results.length === 0) return { toolCalls: [{ name: "delete_note", args: { path: "Projects/Garden.md" } }] };
+                return { text: results[0].includes("declined") ? "OK, I did not delete it." : "Deleted." };
+            }
             if (/garden note/i.test(question)) {
                 if (results.length === 0) return { toolCalls: [{ name: "create_note", args: { path: "Projects/Garden", content: "- plant tomatoes" } }] };
                 return { text: "Created Projects/Garden.md." };
@@ -74,14 +78,35 @@ describe("Private AI agent in real Obsidian", function () {
         expect(usedNotes).toContain("Used 1 note");
     });
 
-    it("creates a note when asked", async function () {
+    async function answerConfirmation(button: "allow" | "deny"): Promise<string> {
+        const dialog = browser.$('[data-testid="confirm-change"]');
+        await dialog.waitForExist({ timeout: 20000 });
+        const text = await dialog.getText();
+        await browser.$(`[data-testid="confirm-change-${button}"]`).click();
+        await dialog.waitForExist({ timeout: 5000, reverse: true });
+        return text;
+    }
+
+    it("creates a note only after the user clicks Allow", async function () {
         await ask("Please make a garden note");
+        const dialogText = await answerConfirmation("allow");
+        expect(dialogText).toContain("Create Projects/Garden.md");
+        expect(dialogText).toContain("- plant tomatoes");
         await browser.waitUntil(async () => (await lastAssistantText()).includes("Created Projects/Garden.md"), { timeout: 20000 });
         const content = await browser.executeObsidian(async ({ app }) => {
             const f = app.vault.getFileByPath("Projects/Garden.md");
             return f ? app.vault.read(f) : null;
         });
         expect(content).toBe("- plant tomatoes");
+    });
+
+    it("leaves the note alone when the user clicks Deny", async function () {
+        await ask("Now delete the garden note");
+        const dialogText = await answerConfirmation("deny");
+        expect(dialogText).toContain("Move Projects/Garden.md to the trash");
+        await browser.waitUntil(async () => (await lastAssistantText()).includes("did not delete"), { timeout: 20000 });
+        const stillThere = await browser.executeObsidian(({ app }) => !!app.vault.getFileByPath("Projects/Garden.md"));
+        expect(stillThere).toBe(true);
     });
 
     it("serves the vault tools over localhost MCP when enabled", async function () {
@@ -100,6 +125,15 @@ describe("Private AI agent in real Obsidian", function () {
         expect(tools.map((t) => t.name)).toContain("search_notes");
         const result = await client.callTool({ name: "grep_notes", arguments: { pattern: "Rheem" } });
         expect((result.content as Array<{ text: string }>)[0].text).toContain("Home/Water Heater Replacement.md");
+
+        // Outside apps go through the same confirmation dialog for changes.
+        const pending = client.callTool({ name: "create_note", arguments: { path: "From Outside", content: "hi" } });
+        const dialogText = await answerConfirmation("deny");
+        expect(dialogText).toContain("Create From Outside.md");
+        const denied = await pending;
+        expect(denied.isError).toBe(true);
+        const created = await browser.executeObsidian(({ app }) => !!app.vault.getFileByPath("From Outside.md"));
+        expect(created).toBe(false);
         await client.close();
 
         await browser.executeObsidian(async ({ app }) => {

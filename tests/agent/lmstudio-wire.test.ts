@@ -56,7 +56,7 @@ describe('Pi agent against an OpenAI-compatible local server', () => {
 
 	it('streams tool calls, runs them through MCP and sends results back in OpenAI format', async () => {
 		const vault = new InMemoryVault({ 'Home/HVAC Tune-up.md': 'Furnace serviced by Acme on 2025-10-02.' });
-		client = await connectInProcess(createVaultMcpServer(createVaultTools({ vault, search: new VaultSearch(vault) }), { version: 't', allowWrites: () => true }));
+		client = await connectInProcess(createVaultMcpServer(createVaultTools({ vault, search: new VaultSearch(vault), confirm: async () => true }), { version: 't', allowWrites: () => true }));
 
 		turns = [
 			() => [

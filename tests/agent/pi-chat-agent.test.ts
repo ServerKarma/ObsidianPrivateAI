@@ -4,7 +4,7 @@ import { fauxAssistantMessage, fauxText, fauxThinking, fauxToolCall, registerFau
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { PiChatAgent, PiChatSettings, ChatAgentEvent, baseUrlFromEndpoint, buildLocalModel, pruneToBudget } from '../../src/agent/pi/PiChatAgent';
 import { loadMcpTools } from '../../src/agent/pi/mcpTools';
-import { createVaultTools } from '../../src/agent/tools/vaultTools';
+import { createVaultTools, ChangeRequest } from '../../src/agent/tools/vaultTools';
 import { createVaultMcpServer } from '../../src/agent/mcp/vaultMcpServer';
 import { connectInProcess } from '../../src/agent/mcp/inProcessClient';
 import { VaultSearch } from '../../src/agent/search/VaultSearch';
@@ -22,15 +22,23 @@ const SETTINGS: PiChatSettings = {
 let faux: FauxProviderRegistration;
 let client: Client;
 let vault: InMemoryVault;
+let approve = true;
+let asked: ChangeRequest[] = [];
+const confirm = async (r: ChangeRequest) => {
+	asked.push(r);
+	return approve;
+};
 
 beforeEach(async () => {
+	approve = true;
+	asked = [];
 	faux = registerFauxProvider({ tokensPerSecond: 100000 });
 	vault = new InMemoryVault({
 		'Home/Water Heater Replacement.md': 'Replaced the water heater on 2024-03-15 for $1,850.',
 		'Home/Dishwasher.md': 'Dishwasher pump fixed.',
 	});
 	const search = new VaultSearch(vault);
-	client = await connectInProcess(createVaultMcpServer(createVaultTools({ vault, search }), { version: 't', allowWrites: () => true }));
+	client = await connectInProcess(createVaultMcpServer(createVaultTools({ vault, search, confirm: (r) => confirm(r) }), { version: 't', allowWrites: () => true }));
 });
 
 afterEach(async () => {
@@ -161,7 +169,25 @@ describe('PiChatAgent (Pi harness over the built-in MCP server)', () => {
 			fauxAssistantMessage(fauxText('Created Todo.md.')),
 		]);
 		await makeAgent().send('Make a todo note', () => undefined);
+		expect(asked).toEqual([expect.objectContaining({ action: 'create', path: 'Todo.md', content: '- call plumber' })]);
 		expect(await vault.read('Todo.md')).toBe('- call plumber');
+	});
+
+	it('changes nothing when the user denies the change, and tells the model', async () => {
+		approve = false;
+		let toolResult = '';
+		faux.setResponses([
+			fauxAssistantMessage([fauxToolCall('delete_note', { path: 'Home/Dishwasher.md' })], { stopReason: 'toolUse' }),
+			(ctx) => {
+				toolResult = JSON.stringify(toolResultsIn(ctx as any)[0]);
+				return fauxAssistantMessage(fauxText('OK, I left it.'));
+			},
+		]);
+		await makeAgent().send('Delete the dishwasher note', () => undefined);
+		expect(asked).toHaveLength(1);
+		expect(toolResult).toContain('declined');
+		expect(vault.getFile('Home/Dishwasher.md')).not.toBeNull();
+		expect(vault.trashed).toEqual([]);
 	});
 
 	it('surfaces provider errors and leaves history unchanged', async () => {

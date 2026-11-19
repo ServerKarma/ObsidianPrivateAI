@@ -641,7 +641,7 @@ class LocalLLMSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Allow note changes')
-			.setDesc('Let the AI create, edit, move and delete notes when you ask it to. Deleted notes go to the trash. When off, it can only search and read.')
+			.setDesc('Let the AI create, edit, move and delete notes when you ask it to. Every change opens a dialog and only happens if you click Allow. Deleted notes go to the trash. When off, it can only search and read.')
 			.addToggle(toggle => toggle
 				.setValue(this.plugin.settings.allowNoteChanges)
 				.onChange(async (value) => {
