@@ -2,7 +2,8 @@ import { App, Plugin, PluginSettingTab, Setting, WorkspaceLeaf, ItemView, Notice
 import { ChatView } from './views/ChatView';
 import { LoggingUtility } from './utils/LoggingUtility';
 import { AgentRuntime } from './agent/obsidian/AgentRuntime';
-import { PiChatAgent } from './agent/pi/PiChatAgent';
+import { ChatAgentError, PiChatAgent } from './agent/pi/PiChatAgent';
+import { imagesUnavailableMessage, noModelsMessage, noToolSupportMessage, noVisionMessage, serverOfflineMessage } from './services/modelGuidance';
 import { ImageTextExtractor } from './services/ImageTextExtractor';
 import { CleanupResult, removeLegacyEmbeddingFiles } from './services/LegacyEmbeddingCleanup';
 import '../styles.css';
@@ -196,8 +197,18 @@ export default class LocalLLMPlugin extends Plugin {
 			}),
 			loadTools: () => this.agentRuntime.loadAgentTools(),
 			resolveModelId: async () => {
+				// Checked before every message, so the user gets instructions instead of a raw network error.
 				const { createLLMService } = await import('./services/LLMService');
-				return createLLMService({ apiEndpoint: this.settings.apiEndpoint, apiKey: this.settings.apiKey }).getDefaultChatModel();
+				const status = await createLLMService({
+					apiEndpoint: this.settings.apiEndpoint,
+					apiKey: this.settings.apiKey,
+					model: this.settings.model
+				}).getServerStatus('tools');
+				if (status.state === 'offline') throw new ChatAgentError(serverOfflineMessage(this.settings.apiEndpoint));
+				if (status.state === 'no-models') throw new ChatAgentError(noModelsMessage());
+				if (status.state !== 'ready') return undefined;
+				if (status.model.toolUse === false) throw new ChatAgentError(noToolSupportMessage(status.model.id));
+				return status.model.id;
 			}
 		});
 	}
@@ -211,9 +222,32 @@ export default class LocalLLMPlugin extends Plugin {
 		const controller = new AbortController();
 		this.imageProcessing = controller;
 		try {
-			const extractor = new ImageTextExtractor(this.llmService, this.app);
-			const vision = await extractor.checkVisionCapabilities();
-			if (!vision?.supportsVision) {
+			const { createLLMService } = await import('./services/LLMService');
+			const connection = { apiEndpoint: this.settings.apiEndpoint, apiKey: this.settings.apiKey, model: this.settings.model };
+			const status = await createLLMService(connection).getServerStatus('vision');
+			if (status.state === 'offline' || status.state === 'no-models') {
+				if (!background) new Notice(imagesUnavailableMessage(status.state), 8000);
+				return;
+			}
+			let visionKnown = false;
+			if (status.state === 'ready') {
+				if (status.model.vision === false) {
+					if (!background) new Notice(noVisionMessage(status.model.id), 10000);
+					return;
+				}
+				// On startup, don't make the server load a model just to read images.
+				if (background && !status.model.loaded) return;
+				visionKnown = status.model.vision === true;
+				connection.model = status.model.id;
+			}
+			const extractor = new ImageTextExtractor(createLLMService({
+				...connection,
+				maxTokens: this.settings.maxTokens,
+				temperature: this.settings.temperature,
+				systemPrompt: this.settings.systemPrompt
+			}), this.app);
+			// Servers that don't report capabilities are asked to describe a test image instead.
+			if (!visionKnown && !(await extractor.checkVisionCapabilities())?.supportsVision) {
 				if (!background) {
 					new Notice('Vision model required: load a vision model (like Gemma 4) in LM Studio to read text from images.', 8000);
 				}

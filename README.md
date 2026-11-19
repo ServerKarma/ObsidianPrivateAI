@@ -50,14 +50,20 @@ Chat view ──► Pi agent loop (pi-agent-core + pi-ai, OpenAI-compatible) ─
           Built-in MCP server ──► vault tools ──► BM25 index + grep over your notes
 ```
 
-Pick a model with good native tool use (Qwen 3, Gemma 4, gpt-oss) for the best results.
+Pick a model that supports tool use and, to read text in images, vision. These run on an Apple-silicon MacBook (M1 or later):
+
+- **Gemma 4 E4B** (recommended) for 16 GB of memory or more
+- **Gemma 4 E2B** for 8 GB of memory, such as a base MacBook Air M1
+
+If no model is loaded when you send a message, Private AI picks the smallest downloaded model that can use tools and LM Studio loads it.
 
 ## Development
 
 ### Tests
 
 - `npm test` runs the unit and integration tests (Vitest). The agent stack under `src/agent/` has no Obsidian dependency, so the agent loop, MCP server, tools and search are tested in plain Node against an in-memory vault and a scripted model, plus a fake OpenAI-compatible server.
-- `npm run eval` boots real Obsidian with the test vault via wdio-obsidian-service (see `AGENTIC_HARNESS_PLAN.md`).
+- `npm run eval` boots real Obsidian with the test vault via wdio-obsidian-service (see `AGENTIC_HARNESS_PLAN.md`). The model is scripted, so it needs no LM Studio.
+- `npm run eval:live` is a manual suite against a real LM Studio (`e2e/live/`). Start LM Studio and its local server first. It checks that a model is loaded when none is, that the loaded model is reused, and that models without tool support or vision produce a clear message. It loads and unloads models and puts back what was loaded afterwards. The no-tools and no-vision cases are skipped unless such a model is downloaded (or named in `LIVE_NO_TOOLS_MODEL` / `LIVE_NO_VISION_MODEL`). Set `LMSTUDIO_URL` if the server is not at `http://localhost:1234`.
 
 ### Contributing
 

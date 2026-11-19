@@ -103,13 +103,59 @@ export interface LMStudioRestModel {
 	id?: string;
 	display_name?: string;
 	loaded_instances?: Array<{ id?: string }>;
+	size_bytes?: number;
+	capabilities?: { vision?: boolean; trained_for_tool_use?: boolean } | null;
 }
 
 /** A model the server lists; `loaded` is only known when LM Studio's REST API reports it. */
 interface ListedModel {
 	id: string;
+	/** The model's catalog key, when it differs from a loaded instance's id. */
+	key?: string;
 	type?: 'llm' | 'embedding';
 	loaded?: boolean;
+	vision?: boolean;
+	toolUse?: boolean;
+	sizeBytes?: number;
+}
+
+/** A chat model the server offers. Capabilities are undefined when the server doesn't report them. */
+export interface ChatModelInfo {
+	id: string;
+	loaded: boolean;
+	vision?: boolean;
+	toolUse?: boolean;
+}
+
+/**
+ * What the local server can do right now:
+ * - offline: nothing answers at the endpoint (LM Studio closed or its server stopped)
+ * - no-models: it answers, but has no chat model downloaded
+ * - unknown: it answers, but can't list its models (not LM Studio or OpenAI-compatible there)
+ * - ready: `model` is the one a request would use
+ */
+export type ServerStatus =
+	| { state: 'offline' }
+	| { state: 'no-models' }
+	| { state: 'unknown' }
+	| { state: 'ready'; model: ChatModelInfo };
+
+const isChatModel = (m: ListedModel): boolean => m.type !== 'embedding' && !m.id.toLowerCase().includes('embed');
+
+/**
+ * The model to use when the user hasn't picked one: a loaded model if there is one (so the
+ * server isn't made to load another), otherwise the smallest downloaded model that can do
+ * what is needed, which is the one most likely to fit in memory.
+ */
+function pickDefaultModel(chatModels: ListedModel[], need: 'tools' | 'vision'): ListedModel | undefined {
+	const able = (m: ListedModel) => (need === 'vision' ? m.vision : m.toolUse) !== false;
+	const loaded = chatModels.filter((m) => m.loaded);
+	if (loaded.length > 0) return loaded.find(able) ?? loaded[0];
+	const candidates = chatModels.some(able) ? chatModels.filter(able) : chatModels;
+	return candidates.reduce<ListedModel | undefined>(
+		(best, m) => (!best || (m.sizeBytes ?? Infinity) < (best.sizeBytes ?? Infinity) ? m : best),
+		undefined,
+	);
 }
 
 export interface LMStudioRestModelsResponse {
@@ -310,14 +356,33 @@ export class LLMService {
 	}
 
 	/**
+	 * Whether the server can be used, and which model a request would go to: the configured
+	 * model, else one already loaded, else the default pick for what is needed.
+	 */
+	async getServerStatus(need: 'tools' | 'vision' = 'tools'): Promise<ServerStatus> {
+		const catalog = await this.fetchModelCatalog();
+		if (!catalog.reached) return { state: 'offline' };
+		if (!catalog.listed) return { state: 'unknown' };
+		const chatModels = catalog.models.filter(isChatModel);
+		if (chatModels.length === 0) return { state: 'no-models' };
+		const info = (m: ListedModel): ChatModelInfo => ({ id: m.id, loaded: !!m.loaded, vision: m.vision, toolUse: m.toolUse });
+		const configured = this.config.model?.trim();
+		if (configured) {
+			const found = chatModels.find((m) => m.id === configured || m.key === configured);
+			return { state: 'ready', model: found ? info(found) : { id: configured, loaded: false } };
+		}
+		return { state: 'ready', model: info(pickDefaultModel(chatModels, need) as ListedModel) };
+	}
+
+	/**
 	 * The chat model to use when none is configured: one already loaded in LM Studio if
-	 * there is one (so the server is not made to load another), else the first one listed.
+	 * there is one (so the server is not made to load another), else the smallest one
+	 * that can use tools.
 	 */
 	async getDefaultChatModel(): Promise<string | undefined> {
 		try {
 			const models = await this.fetchAvailableModels();
-			const chatModels = models.filter((m) => m.type !== 'embedding' && !m.id.toLowerCase().includes('embed'));
-			return (chatModels.find((m) => m.loaded) ?? chatModels[0])?.id;
+			return pickDefaultModel(models.filter(isChatModel), 'tools')?.id;
 		} catch (error) {
 			LoggingUtility.warn('Could not determine a default chat model:', error);
 			return undefined;
@@ -356,32 +421,43 @@ export class LLMService {
 	}
 
 	private async fetchAvailableModels(): Promise<Array<ListedModel>> {
-		const endpoints = this.getModelListEndpoints();
-		const headers = this.buildHeaders();
+		const catalog = await this.fetchModelCatalog();
+		if (catalog.models.length > 0) return catalog.models;
+		throw new Error('Failed to fetch models from all known model endpoints');
+	}
 
-		for (const endpoint of endpoints) {
+	/**
+	 * Asks the server for its models. `reached` says whether anything answered at all, and
+	 * `listed` whether an answer was a model list (possibly empty), so callers can tell a
+	 * stopped server from one with nothing downloaded.
+	 */
+	private async fetchModelCatalog(): Promise<{ reached: boolean; listed: boolean; models: ListedModel[] }> {
+		const headers = this.buildHeaders();
+		let reached = false;
+		let listed = false;
+
+		for (const endpoint of this.getModelListEndpoints()) {
 			try {
 				LoggingUtility.log('Fetching models from:', endpoint);
-				const response = await requestUrl({
-					url: endpoint,
-					method: 'GET',
-					headers
-				});
-
+				const response = await requestUrl({ url: endpoint, method: 'GET', headers, throw: false });
+				reached = true;
 				if (response.status >= 400) {
-					throw new Error(`Failed to fetch models: ${response.status}`);
+					LoggingUtility.warn(`Failed to fetch models from ${endpoint}: ${response.status}`);
+					continue;
 				}
-
-				const parsed = this.parseModelsResponse(response.json);
-				if (parsed.length > 0) {
-					return parsed;
-				}
+				const payload = response.json as Partial<ModelsResponse & LMStudioRestModelsResponse> | null;
+				if (!Array.isArray(payload?.data) && !Array.isArray(payload?.models)) continue;
+				listed = true;
+				const parsed = this.parseModelsResponse(payload);
+				if (parsed.length > 0) return { reached, listed, models: parsed };
 			} catch (error) {
+				// An HTTP error still means a server is there; a network error means it isn't.
+				if (typeof (error as { status?: unknown })?.status === 'number') reached = true;
 				LoggingUtility.warn(`Failed to fetch models from ${endpoint}:`, error);
 			}
 		}
 
-		throw new Error('Failed to fetch models from all known model endpoints');
+		return { reached, listed, models: [] };
 	}
 
 	private getModelListEndpoints(): string[] {
@@ -434,8 +510,12 @@ export class LLMService {
 					return {
 						// A loaded instance's id is what the chat endpoint routes to without a reload.
 						id: instances[0]?.id || model?.key || model?.id || model?.display_name || '',
+						key: model?.key,
 						type: model?.type,
-						loaded: instances.length > 0
+						loaded: instances.length > 0,
+						vision: model?.capabilities?.vision,
+						toolUse: model?.capabilities?.trained_for_tool_use,
+						sizeBytes: model?.size_bytes
 					};
 				})
 				.forEach(model => {
