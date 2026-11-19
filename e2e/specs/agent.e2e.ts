@@ -47,6 +47,10 @@ describe("Private AI agent in real Obsidian", function () {
                 if (results.length === 0) return { toolCalls: [{ name: "delete_note", args: { path: "Projects/Garden.md" } }] };
                 return { text: results[0].includes("declined") ? "OK, I did not delete it." : "Deleted." };
             }
+            if (/pantry note/i.test(question)) {
+                if (results.length === 0) return { toolCalls: [{ name: "create_note", args: { path: "Projects/Pantry", content: "- rice" } }] };
+                return { text: results[0].includes("Created") ? "Created the pantry note." : "I left your notes alone." };
+            }
             if (/garden note/i.test(question)) {
                 if (results.length === 0) return { toolCalls: [{ name: "create_note", args: { path: "Projects/Garden", content: "- plant tomatoes" } }] };
                 return { text: "Created Projects/Garden.md." };
@@ -191,6 +195,89 @@ describe("Private AI agent in real Obsidian", function () {
             expect(await vaultSnapshot()).toEqual(vaultBefore);
         });
     }
+
+    describe("when changing notes is turned off (the default)", function () {
+        const allowed = () => browser.executeObsidian(({ app }) => (app as any).plugins.plugins["private-ai"].settings.allowNoteChanges as boolean);
+        const pantryExists = () => browser.executeObsidian(({ app }) => !!app.vault.getFileByPath("Projects/Pantry.md"));
+
+        async function answerEnableQuestion(button: "yes" | "no"): Promise<string> {
+            const dialog = browser.$('[data-testid="enable-changes"]');
+            await dialog.waitForExist({ timeout: 20000 });
+            const text = await browser.$(".modal").getText();
+            await browser.$(`[data-testid="enable-changes-${button}"]`).click();
+            await dialog.waitForExist({ timeout: 5000, reverse: true });
+            return text;
+        }
+
+        before(async function () {
+            await browser.executeObsidian(async ({ app }) => {
+                const plugin = (app as any).plugins.plugins["private-ai"];
+                plugin.settings.allowNoteChanges = false;
+                await plugin.saveSettings();
+            });
+        });
+
+        after(async function () {
+            await browser.executeObsidian(async ({ app }) => {
+                const plugin = (app as any).plugins.plugins["private-ai"];
+                plugin.settings.allowNoteChanges = true;
+                await plugin.saveSettings();
+            });
+        });
+
+        it("asks whether to turn it on, and stays read-only when the user says No", async function () {
+            await ask("Please make a pantry note");
+            const question = await answerEnableQuestion("no");
+            expect(question).toContain("change your notes?");
+            expect(question).toContain("read-only");
+            expect(question).toContain("Create note");
+            await browser.waitUntil(async () => (await lastAssistantText()).includes("I left your notes alone"), { timeout: 20000 });
+            // No change dialog followed, nothing was written, and the setting is still off.
+            expect(await browser.$('[data-testid="confirm-change"]').isExisting()).toBe(false);
+            expect(await pantryExists()).toBe(false);
+            expect(await allowed()).toBe(false);
+        });
+
+        it("still searches and reads without asking", async function () {
+            await ask("When did I replace the water heater?");
+            await browser.waitUntil(async () => (await lastAssistantText()).includes("2024-03-15"), { timeout: 20000 });
+            expect(await browser.$('[data-testid="enable-changes"]').isExisting()).toBe(false);
+        });
+
+        it("turns it on when the user says Yes, then asks to approve the change itself", async function () {
+            await ask("Please make a pantry note");
+            await answerEnableQuestion("yes");
+            const dialogText = await answerConfirmation("allow");
+            expect(dialogText).toContain("Create Projects/Pantry.md");
+            await browser.waitUntil(async () => (await lastAssistantText()).includes("Created the pantry note"), { timeout: 20000 });
+            expect(await pantryExists()).toBe(true);
+            expect(await allowed()).toBe(true);
+        });
+
+        it("names the setting for what it allows", async function () {
+            const main = await browser.getWindowHandle();
+            await browser.executeObsidian(({ app }) => {
+                (app as any).setting.open();
+                (app as any).setting.openTabById("private-ai");
+            });
+            try {
+                let names: string[] = [];
+                await browser.waitUntil(async () => {
+                    for (const handle of await browser.getWindowHandles()) {
+                        await browser.switchToWindow(handle);
+                        names = await browser.execute(() => Array.from(document.querySelectorAll(".setting-item-name")).map((n) => (n.textContent ?? "").trim()));
+                        if (names.includes("Allow editing, deleting, and moving")) return true;
+                    }
+                    return false;
+                }, { timeout: 10000, timeoutMsg: "the renamed setting was not found in the settings page" });
+                expect(names).not.toContain("Allow note changes");
+            } finally {
+                if ((await browser.getWindowHandle()) !== main) await browser.execute(() => window.close());
+                await browser.switchToWindow(main);
+                await browser.executeObsidian(({ app }) => (app as any).setting.close());
+            }
+        });
+    });
 
     it("keeps the vault tools inside Obsidian: no MCP sharing setting or network listener", async function () {
         const state = await browser.executeObsidian(({ app }) => {

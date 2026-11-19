@@ -52,7 +52,8 @@ export const DEFAULT_SETTINGS: LocalLLMSettings = {
 	temperature: 0.7,
 	systemPrompt: '',
 	enableDeveloperLogging: false,
-	allowNoteChanges: true,
+	// Read-only until the user turns this on (the agent asks the first time it wants to change a note)
+	allowNoteChanges: false,
 	maxToolRounds: 8,
 	contextWindow: 32768,
 	enableImageTextExtraction: true,
@@ -104,6 +105,10 @@ export default class LocalLLMPlugin extends Plugin {
 			version: this.manifest.version,
 			pluginDir: this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`,
 			settings: () => this.settings,
+			enableNoteChanges: async () => {
+				this.settings.allowNoteChanges = true;
+				await this.saveSettings();
+			},
 			log: (message, error) => LoggingUtility.error(message, error)
 		});
 		try {
@@ -602,8 +607,8 @@ class LocalLLMSettingTab extends PluginSettingTab {
 		new Setting(containerEl).setName('Agent').setHeading();
 
 		new Setting(containerEl)
-			.setName('Allow note changes')
-			.setDesc('Let the AI create, edit, move and delete notes when you ask it to. Every change opens a dialog and only happens if you click Allow. Deleted notes go to the trash. When off, it can only search and read.')
+			.setName('Allow editing, deleting, and moving')
+			.setDesc('Off by default: the AI can only search and read your notes. The first time it tries to create, edit, move or delete a note, it asks whether to turn this on. When on, every change still opens a dialog and only happens if you click Allow. Deleted notes go to the trash.')
 			.addToggle(toggle => toggle
 				.setValue(this.plugin.settings.allowNoteChanges)
 				.onChange(async (value) => {

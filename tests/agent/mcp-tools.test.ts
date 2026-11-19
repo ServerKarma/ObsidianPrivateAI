@@ -20,7 +20,7 @@ afterEach(async () => {
 	client = null;
 });
 
-async function setup(allowWrites = true, answer: boolean | (() => Promise<boolean>) = true) {
+async function setup(allowWrites = true, answer: boolean | (() => Promise<boolean>) = true, enableAnswer?: boolean) {
 	const vault = new InMemoryVault(FIXTURE);
 	const search = new VaultSearch(vault, () => ({ excludedFolders: ['Private'] }));
 	const asked: ChangeRequest[] = [];
@@ -33,15 +33,78 @@ async function setup(allowWrites = true, answer: boolean | (() => Promise<boolea
 		},
 	});
 	let writes = allowWrites;
-	const server = createVaultMcpServer(tools, { version: 'test', allowWrites: () => writes });
+	const enableAsked: string[] = [];
+	const server = createVaultMcpServer(tools, {
+		version: 'test',
+		allowWrites: () => writes,
+		// Stands in for the "turn on note changes?" dialog.
+		requestWrites: enableAnswer === undefined ? undefined : async (tool) => {
+			enableAsked.push(tool.name);
+			if (enableAnswer) writes = true;
+			return enableAnswer;
+		},
+	});
 	client = await connectInProcess(server, 'test');
 	const call = async (name: string, args: Record<string, unknown> = {}) => {
 		const r = await client!.callTool({ name, arguments: args });
 		const text = (r.content as Array<{ text: string }>).map((c) => c.text).join('\n');
 		return { text, isError: !!r.isError };
 	};
-	return { vault, call, asked, setWrites: (v: boolean) => (writes = v) };
+	return { vault, call, asked, enableAsked, setWrites: (v: boolean) => (writes = v), writesOn: () => writes };
 }
+
+describe('read-only by default', () => {
+	it('lists write tools while changes are off, so the model can ask to use one', async () => {
+		await setup(false, true, false);
+		const { tools } = await client!.listTools();
+		expect(tools.map((t) => t.name)).toContain('edit_note');
+	});
+
+	it('asks to turn changes on at the first write, and changes nothing when the user says no', async () => {
+		const { vault, call, asked, enableAsked, writesOn } = await setup(false, true, false);
+		const before = vault.read('Home/Water Heater Replacement.md');
+
+		for (const [name, args] of [
+			['edit_note', { path: 'Home/Water Heater Replacement.md', old_text: '50 gallon', new_text: '80 gallon' }],
+			['move_note', { from: 'Home/Water Heater Replacement.md', to: 'Archive/Water Heater.md' }],
+			['delete_note', { path: 'Home/Water Heater Replacement.md' }],
+			['create_note', { path: 'New.md', content: 'x' }],
+			['append_to_note', { path: 'Home/Water Heater Replacement.md', content: 'x' }],
+		] as Array<[string, Record<string, unknown>]>) {
+			const result = await call(name, args);
+			expect(result.isError).toBe(true);
+			expect(result.text).toContain('the user chose to keep it off');
+		}
+
+		expect(enableAsked).toEqual(['edit_note', 'move_note', 'delete_note', 'create_note', 'append_to_note']);
+		// The per-change dialog never opened, and nothing in the vault moved.
+		expect(asked).toEqual([]);
+		expect(writesOn()).toBe(false);
+		expect(await vault.read('Home/Water Heater Replacement.md')).toBe(await before);
+		expect(vault.getFile('New.md')).toBeNull();
+		expect(vault.getFile('Archive/Water Heater.md')).toBeNull();
+	});
+
+	it('still asks to approve the change itself after the user turns changes on', async () => {
+		const { vault, call, asked, enableAsked, writesOn } = await setup(false, true, true);
+		const result = await call('create_note', { path: 'New.md', content: 'hello' });
+		expect(result.isError).toBe(false);
+		expect(enableAsked).toEqual(['create_note']);
+		expect(asked.map((r) => r.title)).toEqual(['Create New.md']);
+		expect(writesOn()).toBe(true);
+		expect(await vault.read('New.md')).toBe('hello');
+
+		// Once on, it does not ask again.
+		await call('append_to_note', { path: 'New.md', content: 'more' });
+		expect(enableAsked).toEqual(['create_note']);
+	});
+
+	it('does not ask for read-only tools', async () => {
+		const { call, enableAsked } = await setup(false, true, false);
+		expect((await call('search_notes', { query: 'water heater' })).isError).toBe(false);
+		expect(enableAsked).toEqual([]);
+	});
+});
 
 describe('built-in MCP server', () => {
 	it('publishes every vault tool with schemas and annotations', async () => {

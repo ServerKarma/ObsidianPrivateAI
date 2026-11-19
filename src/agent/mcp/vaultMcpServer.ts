@@ -8,7 +8,16 @@ export interface VaultMcpServerOptions {
 	version: string;
 	/** Read on every request, so toggling the setting takes effect immediately. */
 	allowWrites: () => boolean;
+	/**
+	 * Asks the user whether to turn note changes on, when a write tool is called while they
+	 * are off. Resolves true only if they are now on. Without it, write tools are hidden
+	 * and refused while changes are off.
+	 */
+	requestWrites?: (tool: VaultToolDefinition) => Promise<boolean>;
 }
+
+export const WRITES_STAY_OFF_MESSAGE =
+	'Changing notes is turned off, and the user chose to keep it off, so nothing was changed. Do not retry it unless the user asks again.';
 
 /**
  * The plugin's built-in MCP server. It is the single place vault tools are
@@ -26,7 +35,10 @@ export function createVaultMcpServer(tools: VaultToolDefinition[], options: Vaul
 		},
 	);
 
-	const visible = (): VaultToolDefinition[] => (options.allowWrites() ? tools : tools.filter((t) => t.readOnly));
+	// With a way to ask the user, write tools stay listed while changes are off, so the model
+	// can try one and the user gets the question. Otherwise they are hidden.
+	const visible = (): VaultToolDefinition[] =>
+		options.allowWrites() || options.requestWrites ? tools : tools.filter((t) => t.readOnly);
 
 	server.setRequestHandler(ListToolsRequestSchema, async () => ({
 		tools: visible().map((t) => ({
@@ -56,6 +68,15 @@ export function createVaultMcpServer(tools: VaultToolDefinition[], options: Vaul
 						: `Unknown tool: ${request.params.name}`,
 				}],
 			};
+		}
+		if (!tool.readOnly && !options.allowWrites()) {
+			let enabled = false;
+			try {
+				enabled = (await options.requestWrites?.(tool)) === true && options.allowWrites();
+			} catch {
+				enabled = false;
+			}
+			if (!enabled) return { isError: true, content: [{ type: 'text', text: WRITES_STAY_OFF_MESSAGE }] };
 		}
 		try {
 			const text = await tool.run((request.params.arguments ?? {}) as Record<string, unknown>);
