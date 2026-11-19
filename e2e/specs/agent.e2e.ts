@@ -31,6 +31,18 @@ describe("Private AI agent in real Obsidian", function () {
                 const date = results[1].match(/replaced the water heater on (\d{4}-\d{2}-\d{2})/i)?.[1] ?? "unknown";
                 return { text: `You replaced the water heater on ${date}.` };
             }
+            if (/change tomatoes/i.test(question)) {
+                if (results.length === 0) {
+                    return { toolCalls: [{ name: "edit_note", args: { path: "Projects/Garden.md", old_text: "tomatoes", new_text: "peppers" } }] };
+                }
+                return { text: results[0].includes("declined") ? "OK, I did not edit it." : "Edited." };
+            }
+            if (/move the garden note/i.test(question)) {
+                if (results.length === 0) {
+                    return { toolCalls: [{ name: "move_note", args: { from: "Projects/Garden.md", to: "Archive/Garden.md" } }] };
+                }
+                return { text: results[0].includes("declined") ? "OK, I did not move it." : "Moved." };
+            }
             if (/delete the garden note/i.test(question)) {
                 if (results.length === 0) return { toolCalls: [{ name: "delete_note", args: { path: "Projects/Garden.md" } }] };
                 return { text: results[0].includes("declined") ? "OK, I did not delete it." : "Deleted." };
@@ -109,14 +121,76 @@ describe("Private AI agent in real Obsidian", function () {
         expect(content).toBe("- plant tomatoes");
     });
 
-    it("leaves the note alone when the user clicks Deny", async function () {
-        await ask("Now delete the garden note");
-        const dialogText = await answerConfirmation("deny");
-        expect(dialogText).toContain("Move Projects/Garden.md to the trash");
-        await browser.waitUntil(async () => (await lastAssistantText()).includes("did not delete"), { timeout: 20000 });
-        const stillThere = await browser.executeObsidian(({ app }) => !!app.vault.getFileByPath("Projects/Garden.md"));
-        expect(stillThere).toBe(true);
-    });
+    /** Every file and folder in the vault, with note contents, to prove a denied change left nothing behind. */
+    async function vaultSnapshot(): Promise<Record<string, string>> {
+        return browser.executeObsidian(async ({ app }) => {
+            const snapshot: Record<string, string> = {};
+            for (const entry of app.vault.getAllLoadedFiles()) {
+                const file = app.vault.getFileByPath(entry.path);
+                snapshot[entry.path] = file ? (file.extension === "md" ? await app.vault.read(file) : "(file)") : "(folder)";
+            }
+            return snapshot;
+        });
+    }
+
+    // Each of these runs against the garden note created above, and must leave it exactly as it was.
+    const deniedChanges = [
+        {
+            action: "edit",
+            question: "Change tomatoes to peppers in the garden note",
+            tool: "edit_note",
+            dialog: ["Edit Projects/Garden.md", "tomatoes", "peppers"],
+            reply: "did not edit",
+        },
+        {
+            action: "move",
+            question: "Move the garden note to the archive",
+            tool: "move_note",
+            dialog: ["Move Projects/Garden.md to Archive/Garden.md"],
+            reply: "did not move",
+        },
+        {
+            action: "delete",
+            question: "Now delete the garden note",
+            tool: "delete_note",
+            dialog: ["Move Projects/Garden.md to the trash"],
+            reply: "did not delete",
+        },
+    ];
+
+    for (const change of deniedChanges) {
+        it(`does not ${change.action} the note when the user clicks Deny`, async function () {
+            const vaultBefore = await vaultSnapshot();
+            expect(vaultBefore["Projects/Garden.md"]).toBe("- plant tomatoes");
+            const requestsBefore = llm.requests.length;
+
+            await ask(change.question);
+            const dialogText = await answerConfirmation("deny");
+            for (const expected of change.dialog) expect(dialogText).toContain(expected);
+            // Wait for the turn to finish, so the tool has had every chance to run.
+            await browser.waitUntil(async () => (await lastAssistantText()).includes(change.reply), {
+                timeout: 20000,
+                timeoutMsg: `the agent never reported that the ${change.action} was declined`,
+            }).catch(async (e) => {
+                throw new Error(`${e.message}. Last reply: "${await lastAssistantText()}"`);
+            });
+
+            // The model asked for exactly this tool, once, and was told the user said no.
+            const turn = llm.requests.slice(requestsBefore);
+            const lastRequest = turn[turn.length - 1];
+            const messages: any[] = lastRequest.messages ?? [];
+            const called = messages
+                .slice(messages.map((m) => m.role).lastIndexOf("user") + 1)
+                .filter((m) => m.role === "assistant" && m.tool_calls)
+                .flatMap((m) => m.tool_calls.map((c: any) => c.function.name));
+            expect(called).toEqual([change.tool]);
+            const results = toolResults(lastRequest);
+            expect(results.length).toBe(1);
+            expect(results[0]).toContain("The user declined this change, so nothing was changed");
+
+            expect(await vaultSnapshot()).toEqual(vaultBefore);
+        });
+    }
 
     it("keeps the vault tools inside Obsidian: no MCP sharing setting or network listener", async function () {
         const state = await browser.executeObsidian(({ app }) => {
