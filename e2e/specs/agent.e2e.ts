@@ -109,4 +109,22 @@ describe("Private AI agent in real Obsidian", function () {
         });
         await expect(fetch(`http://127.0.0.1:${port}/mcp`, { method: "POST" })).rejects.toThrow();
     });
+
+    it("deletes the old embedding index files from disk", async function () {
+        const left = await browser.executeObsidian(async ({ app }) => {
+            const plugin = (app as any).plugins.plugins["private-ai"];
+            const adapter = app.vault.adapter;
+            const dirs = [`${plugin.manifest.dir}/vector-index`, `${app.vault.configDir}/plugins/ObsidianPrivateAI/vector-index`];
+            for (const dir of dirs) {
+                if (!(await adapter.exists(dir))) await adapter.mkdir(dir);
+            }
+            await adapter.write(`${dirs[0]}/embeddings.db`, "sqlite");
+            await adapter.write(`${dirs[1]}/text-embeddings.json`, "[]");
+            const result = await plugin.removeLegacyVectorStore();
+            if (result.errors.length) throw new Error(result.errors.join("; "));
+            const checks = [dirs[0], dirs[1], `${app.vault.configDir}/plugins/ObsidianPrivateAI`, plugin.manifest.dir];
+            return Promise.all(checks.map((p) => adapter.exists(p)));
+        });
+        expect(left).toEqual([false, false, false, true]);
+    });
 });

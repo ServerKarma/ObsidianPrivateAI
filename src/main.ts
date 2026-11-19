@@ -4,6 +4,7 @@ import { LoggingUtility } from './utils/LoggingUtility';
 import { AgentRuntime } from './agent/obsidian/AgentRuntime';
 import { PiChatAgent } from './agent/pi/PiChatAgent';
 import { ImageTextExtractor } from './services/ImageTextExtractor';
+import { CleanupResult, removeLegacyEmbeddingFiles } from './services/LegacyEmbeddingCleanup';
 import '../styles.css';
 import manifest from '../manifest.json';
 
@@ -258,17 +259,27 @@ export default class LocalLLMPlugin extends Plugin {
 		}
 	}
 
-	/** Deletes the embeddings database the old RAG pipeline kept in the plugin folder. It is derived data. */
-	private async removeLegacyVectorStore(): Promise<void> {
-		const dir = `${this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`}/vector-index`;
-		try {
-			if (await this.app.vault.adapter.exists(dir)) {
-				await this.app.vault.adapter.rmdir(dir, true);
-				LoggingUtility.log('Removed legacy vector index at', dir);
-			}
-		} catch (error) {
-			LoggingUtility.warn('Could not remove legacy vector index:', error);
+	/**
+	 * Deletes the index files the old embedding pipeline left on disk (SQLite DB and the
+	 * older JSON embedding files). Runs on every start, so anything that could not be
+	 * removed once is retried next time; it does nothing once they are gone.
+	 */
+	async removeLegacyVectorStore(): Promise<CleanupResult> {
+		const pluginDir = this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
+		const result = await removeLegacyEmbeddingFiles(this.app.vault.adapter, {
+			configDir: this.app.vault.configDir,
+			pluginDir,
+			pluginId: this.manifest.id
+		});
+		for (const error of result.errors) {
+			LoggingUtility.warn('Could not remove old embedding files:', error);
 		}
+		if (result.removedFiles.length > 0) {
+			LoggingUtility.log('Removed old embedding files:', result.removedFiles, result.removedFolders);
+			const mb = result.bytesFreed / (1024 * 1024);
+			new Notice(`Private AI no longer uses embeddings. Removed the old search index${mb >= 0.1 ? ` (${mb.toFixed(1)} MB)` : ''}.`);
+		}
+		return result;
 	}
 
 	async saveSettings() {
