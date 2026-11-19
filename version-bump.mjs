@@ -13,6 +13,24 @@ const [major, minor, patch] = currentVersion.split('.').map(Number);
 // Increment patch version
 const newVersion = `${major}.${minor}.${patch + 1}`;
 
+// Stop before touching anything if this version was already released, so a re-run
+// after a failed push can't leave a second bump commit behind.
+const run = (command) => execSync(command, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+const tagExistsLocally = (() => {
+  try {
+    run(`git rev-parse -q --verify refs/tags/${newVersion}`);
+    return true;
+  } catch {
+    return false;
+  }
+})();
+const tagExistsOnRemote = run(`git ls-remote --tags origin refs/tags/${newVersion}`) !== '';
+if (tagExistsLocally || tagExistsOnRemote) {
+  console.error(`Tag ${newVersion} already exists ${tagExistsOnRemote ? 'on origin' : 'locally'}. Nothing was changed.`);
+  console.error(`If manifest.json is behind the latest release, set its version to that release and run this again.`);
+  process.exit(1);
+}
+
 // Update manifest
 manifest.version = newVersion;
 fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
@@ -31,9 +49,10 @@ execSync(`git commit -m "Bump version to ${newVersion}"`, { stdio: 'inherit' });
 console.log(`Creating git tag ${newVersion}...`);
 execSync(`git tag ${newVersion}`, { stdio: 'inherit' });
 
-console.log('Pushing tags to remote...');
-execSync('git push origin HEAD:main', { stdio: 'inherit' });
-execSync('git push --tags', { stdio: 'inherit' });
+// Push the branch and only the new tag, together. `git push --tags` would send every
+// local tag, and is rejected when an old local tag differs from the one on origin.
+console.log(`Pushing main and tag ${newVersion} to remote...`);
+execSync(`git push --atomic origin HEAD:main refs/tags/${newVersion}`, { stdio: 'inherit' });
 
 // Wait 30 seconds
 console.log('Waiting 60 seconds for GitHub action to create the release...');
