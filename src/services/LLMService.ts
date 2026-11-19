@@ -102,6 +102,14 @@ export interface LMStudioRestModel {
 	key?: string;
 	id?: string;
 	display_name?: string;
+	loaded_instances?: Array<{ id?: string }>;
+}
+
+/** A model the server lists; `loaded` is only known when LM Studio's REST API reports it. */
+interface ListedModel {
+	id: string;
+	type?: 'llm' | 'embedding';
+	loaded?: boolean;
 }
 
 export interface LMStudioRestModelsResponse {
@@ -204,6 +212,10 @@ export class LLMService {
 				stream: false
 			};
 
+			if (this.config.model) {
+				request.model = this.config.model;
+			}
+
 			LoggingUtility.log('Sending vision request to:', this.config.apiEndpoint);
 			LoggingUtility.log('Vision request payload:', JSON.stringify(request, null, 2));
 
@@ -297,12 +309,15 @@ export class LLMService {
 		}
 	}
 
-	/** First chat (non-embedding) model the server reports, used when no model is configured. */
+	/**
+	 * The chat model to use when none is configured: one already loaded in LM Studio if
+	 * there is one (so the server is not made to load another), else the first one listed.
+	 */
 	async getDefaultChatModel(): Promise<string | undefined> {
 		try {
 			const models = await this.fetchAvailableModels();
-			const chat = models.find((m) => m.type !== 'embedding' && !m.id.toLowerCase().includes('embed'));
-			return chat?.id;
+			const chatModels = models.filter((m) => m.type !== 'embedding' && !m.id.toLowerCase().includes('embed'));
+			return (chatModels.find((m) => m.loaded) ?? chatModels[0])?.id;
 		} catch (error) {
 			LoggingUtility.warn('Could not determine a default chat model:', error);
 			return undefined;
@@ -340,7 +355,7 @@ export class LLMService {
 		}
 	}
 
-	private async fetchAvailableModels(): Promise<Array<{ id: string; type?: 'llm' | 'embedding' }>> {
+	private async fetchAvailableModels(): Promise<Array<ListedModel>> {
 		const endpoints = this.getModelListEndpoints();
 		const headers = this.buildHeaders();
 
@@ -398,8 +413,8 @@ export class LLMService {
 		}
 	}
 
-	private parseModelsResponse(payload: unknown): Array<{ id: string; type?: 'llm' | 'embedding' }> {
-		const modelMap = new Map<string, { id: string; type?: 'llm' | 'embedding' }>();
+	private parseModelsResponse(payload: unknown): Array<ListedModel> {
+		const modelMap = new Map<string, ListedModel>();
 		const dataPayload = payload as Partial<ModelsResponse>;
 		const lmStudioPayload = payload as Partial<LMStudioRestModelsResponse>;
 
@@ -414,10 +429,15 @@ export class LLMService {
 
 		if (Array.isArray(lmStudioPayload.models)) {
 			lmStudioPayload.models
-				.map(model => ({
-					id: model?.key || model?.id || model?.display_name || '',
-					type: model?.type
-				}))
+				.map(model => {
+					const instances = Array.isArray(model?.loaded_instances) ? model.loaded_instances : [];
+					return {
+						// A loaded instance's id is what the chat endpoint routes to without a reload.
+						id: instances[0]?.id || model?.key || model?.id || model?.display_name || '',
+						type: model?.type,
+						loaded: instances.length > 0
+					};
+				})
 				.forEach(model => {
 					if (typeof model.id === 'string' && model.id.trim().length > 0) {
 						modelMap.set(model.id, model);
