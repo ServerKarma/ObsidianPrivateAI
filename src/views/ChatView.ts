@@ -1,8 +1,9 @@
-import { ItemView, WorkspaceLeaf, MarkdownRenderer, Notice, DropdownComponent, setIcon } from 'obsidian';
-import { LLMService, createLLMService, ChatMessage as LLMChatMessage, StreamCallback } from '../services/LLMService';
-import { SearchService, SearchResult } from '../services/SearchService';
+import { ItemView, WorkspaceLeaf, MarkdownRenderer, Notice, TFile, setIcon } from 'obsidian';
+import { LLMService, createLLMService } from '../services/LLMService';
+import { PiChatAgent, ChatAgentEvent } from '../agent/pi/PiChatAgent';
+import { describeToolCall, summarizeToolResult } from '../agent/pi/toolActivity';
 import { LoggingUtility } from '../utils/LoggingUtility';
-import LocalLLMPlugin, { ContextMode } from '../main';
+import LocalLLMPlugin from '../main';
 
 export const CHAT_VIEW_TYPE = 'local-llm-chat-view';
 
@@ -12,8 +13,14 @@ interface ChatMessage {
 	content: string;
 	timestamp: Date;
 	isStreaming?: boolean;
-	usedNotes?: SearchResult[];
+	/** Notes the agent read while answering. */
+	usedNotes?: UsedNote[];
 	thinkingBlocks?: string[];
+}
+
+interface UsedNote {
+	title: string;
+	path: string;
 }
 
 interface StreamingThinkingState {
@@ -51,12 +58,6 @@ interface ObsidianApp {
 	};
 }
 
-interface DropdownComponentWithPrivateAPI extends DropdownComponent {
-	__component?: {
-		setValue: (value: string) => void;
-	};
-}
-
 export class ChatView extends ItemView {
 	private messages: ChatMessage[] = [];
 	private messageContainer: HTMLElement;
@@ -65,14 +66,10 @@ export class ChatView extends ItemView {
 	private inputElement: HTMLTextAreaElement;
 	private sendButton: HTMLButtonElement;
 	private stopButton: HTMLButtonElement;
-	private searchIndicator: HTMLElement;
-	private ragStatusArea: HTMLElement;
-	private ragStatusContent: HTMLElement;
 	private llmService: LLMService;
-	private searchService: SearchService;
+	private chatAgent: PiChatAgent;
 	private isStreaming: boolean = false;
 	private currentAbortController: AbortController | null = null;
-	private contextMode: ContextMode = ContextMode.OPEN_NOTES;
 	private plugin: LocalLLMPlugin;
 	private streamingThinkingState = new Map<string, StreamingThinkingState>();
 	private thinkingViewState = new Map<string, ThinkingViewState>();
@@ -82,12 +79,10 @@ export class ChatView extends ItemView {
 	constructor(leaf: WorkspaceLeaf, plugin: LocalLLMPlugin) {
 		super(leaf);
 		this.plugin = plugin;
-		// Pass RAG service to SearchService for enhanced search capabilities
-		this.searchService = new SearchService(this.app, plugin.ragService);
+		// The Pi agent; it reaches the vault through the plugin's built-in MCP server.
+		this.chatAgent = plugin.createChatAgent();
 		// Initialize with plugin settings
 		this.updateLLMServiceFromSettings();
-		// Initialize context mode from plugin settings
-		this.contextMode = this.plugin.settings.contextMode;
 	}
 
 	getViewType(): string {
@@ -107,48 +102,11 @@ export class ChatView extends ItemView {
 		container.empty();
 		container.addClass('local-llm-full-height');
 
-		// Header with title and settings button
+		// Header: chat controls only (the pane's tab already names the view)
 		const header = container.createEl('div', { cls: 'local-llm-chat-header' });
-		header.createEl('h4', { text: 'Private AI chat' });
 
 		// Create button container for header buttons
 		const headerButtons = header.createEl('div', { cls: 'local-llm-header-buttons' });
-
-		// Create new chat button
-		const newChatButton = headerButtons.createEl('button', {
-			cls: 'local-llm-new-chat-button',
-			text: 'New chat',
-			attr: { 'aria-label': 'Start new chat', 'type': 'button' }
-		});
-		newChatButton.addEventListener('click', async () => {
-			await this.startNewChat();
-		});
-
-		// Create context mode dropdown
-		const contextModeContainer = headerButtons.createEl('div', {
-			cls: 'local-llm-context-mode-container'
-		});
-
-		contextModeContainer.createEl('label', {
-			cls: 'local-llm-context-mode-label',
-			text: 'Context:'
-		});
-
-		const dropdown = new DropdownComponent(contextModeContainer)
-			.addOption(ContextMode.OPEN_NOTES, 'Open Tabs')
-			.addOption(ContextMode.SEARCH, 'All Notes')
-			.addOption(ContextMode.NONE, 'None')
-			.onChange(async (value) => {
-				this.contextMode = value as ContextMode;
-				// Save the context mode to plugin settings
-				this.plugin.settings.contextMode = this.contextMode;
-				await this.plugin.saveSettings();
-				// Update RAG status display
-				this.updateRAGStatus();
-			});
-
-		// Set initial value based on plugin settings
-		dropdown.setValue(this.contextMode);
 
 		// Create settings button
 		const settingsButton = headerButtons.createEl('button', {
@@ -164,6 +122,16 @@ export class ChatView extends ItemView {
 				settingTab.open();
 				settingTab.openTabById('private-ai');
 			}
+		});
+
+		// New chat sits on the right
+		const newChatButton = headerButtons.createEl('button', {
+			cls: 'local-llm-new-chat-button',
+			text: 'New chat',
+			attr: { 'aria-label': 'Start new chat', 'type': 'button' }
+		});
+		newChatButton.addEventListener('click', async () => {
+			await this.startNewChat();
 		});
 
 		// Create main chat container with flexbox layout
@@ -184,12 +152,6 @@ export class ChatView extends ItemView {
 			cls: 'local-llm-input-container'
 		});
 
-		// Create search indicator
-		this.searchIndicator = this.inputContainer.createEl('div', {
-			cls: 'local-llm-search-indicator local-llm-search-indicator-hidden',
-			text: '🔍 Searching vault...'
-		});
-
 		// Create input element
 		this.inputElement = this.inputContainer.createEl('textarea', {
 			placeholder: 'Ask a question...',
@@ -206,15 +168,6 @@ export class ChatView extends ItemView {
 		this.stopButton = this.inputContainer.createEl('button', {
 			text: 'Stop',
 			cls: 'local-llm-stop-button'
-		});
-
-		// Create RAG status area below input container
-		this.ragStatusArea = chatContainer.createEl('div', {
-			cls: 'local-llm-rag-status-area local-llm-rag-status-hidden'
-		});
-
-		this.ragStatusContent = this.ragStatusArea.createEl('div', {
-			cls: 'local-llm-rag-status-content'
 		});
 
 		// Add event listeners
@@ -241,8 +194,6 @@ export class ChatView extends ItemView {
 			timestamp: new Date()
 		});
 
-		// Check and display initial RAG status
-		this.updateRAGStatus();
 		if (typeof this.plugin.consumePendingReviewPrompt === 'function') {
 			this.plugin.consumePendingReviewPrompt(this);
 		}
@@ -264,20 +215,6 @@ export class ChatView extends ItemView {
 			model: settings.model,
 			apiKey: settings.apiKey
 		});
-	}
-
-	/**
-	 * Update context mode from settings
-	 */
-	updateContextModeFromSettings(): void {
-		this.contextMode = this.plugin.settings.contextMode;
-		// Update dropdown to reflect new value
-		const dropdown = this.containerEl.querySelector('.local-llm-context-mode-container select') as HTMLSelectElement;
-		if (dropdown) {
-			dropdown.value = this.contextMode;
-		}
-		// Update RAG status display
-		this.updateRAGStatus();
 	}
 
 	updateLLMService(config: LLMConfig) {
@@ -365,116 +302,112 @@ export class ChatView extends ItemView {
 		this.showStopButton(true);
 		this.isStreaming = true;
 
-		// Get context based on dropdown selection
-		let searchContext = '';
-		let searchResults: SearchResult[] = [];
-
-		let contextMode: ContextMode = this.contextMode;
-		this.showSearchIndicator(true);
+		// The agent always has the vault tools. It is told which note is active and which are open,
+		// and decides itself whether the question is about that note or the rest of the vault.
+		let workspace: string | undefined;
 		try {
-			if (contextMode === ContextMode.OPEN_NOTES) {
-				// Use open tabs as context
-				const openTabs = await this.searchService.getCurrentNoteContext();
-				if (openTabs.length > 0) {
-					searchResults = openTabs;
-					searchContext = this.searchService.formatSearchResults(searchResults);
-					LoggingUtility.log(`Using ${openTabs.length} open tabs as context`);
-				} else {
-					LoggingUtility.log('No open tabs found, no context will be used');
-				}
-			} else if (contextMode === ContextMode.SEARCH) {
-				// Search entire vault using RAG (with keyword fallback)
-				const maxContextTokens = Math.floor(this.plugin.settings.maxTokens * (this.plugin.settings.searchContextPercentage / 100));
-				searchResults = await this.searchService.searchVault(content, {
-					maxResults: this.plugin.settings.ragMaxResults,
-					maxTokens: maxContextTokens,
-					threshold: this.plugin.settings.ragThreshold
-				});
-
-				if (searchResults.length > 0) {
-					searchContext = this.searchService.formatSearchResults(searchResults);
-					LoggingUtility.log(`Found ${searchResults.length} relevant notes using enhanced search`);
-				}
-			} else if (contextMode === ContextMode.NONE) {
-				// No context - just use the user's message as-is
-				LoggingUtility.log('No context mode selected - using message without additional context');
-			}
-		} catch (searchError) {
-			LoggingUtility.error('Error getting context:', searchError);
-			// Continue without search context if search fails
-		} finally {
-			this.showSearchIndicator(false);
+			workspace = this.plugin.agentRuntime?.workspaceContext();
+		} catch (contextError) {
+			LoggingUtility.error('Error reading the open notes:', contextError);
 		}
 
-		// Create streaming assistant message
 		const assistantMessage: ChatMessage = {
 			id: 'streaming-' + Date.now(),
 			role: 'assistant',
 			content: '',
 			timestamp: new Date(),
-			isStreaming: true,
-			usedNotes: searchResults.length > 0 ? searchResults : undefined
+			isStreaming: true
 		};
-
 		await this.addMessage(assistantMessage);
 
-		try {
-			// Convert chat history to LLM format
-			const conversationHistory: LLMChatMessage[] = this.messages
-				.filter(m => !m.isStreaming && m.id !== 'welcome')
-				.map(m => ({
-					role: m.role,
-					content: m.content
-				}));
-
-
-
-			// Add search context to the user message if available
-			let enhancedContent = content;
-			if (searchContext) {
-				enhancedContent = `Context from your Obsidian vault:\n${searchContext}\n\nUser question: ${content}`;
+		// Agent events arrive faster than rendering; apply them strictly in order.
+		let renderChain: Promise<void> = Promise.resolve();
+		const push = (chunk: string) => {
+			renderChain = renderChain
+				.then(() => this.updateStreamingMessage(assistantMessage.id, chunk))
+				.catch((renderError) => LoggingUtility.error('Error rendering streamed chunk:', renderError));
+		};
+		let inThinking = false;
+		const openThinking = () => {
+			if (!inThinking) {
+				push('<think>');
+				inThinking = true;
 			}
-
-			// Create streaming callback
-			const streamCallback: StreamCallback = async (chunk: string, isComplete: boolean) => {
-				if (isComplete) {
-					// Finalize the message
-					await this.finalizeStreamingMessage(assistantMessage.id);
-					this.isStreaming = false;
-					this.setSendButtonEnabled(true);
-					this.showStopButton(false);
-					this.currentAbortController = null;
-				} else {
-					// Update the streaming message
-					await this.updateStreamingMessage(assistantMessage.id, chunk);
+		};
+		const closeThinking = () => {
+			if (inThinking) {
+				push('</think>');
+				inThinking = false;
+			}
+		};
+		const notesRead = new Map<string, UsedNote>();
+		const onEvent = (event: ChatAgentEvent) => {
+			// A rendering problem must never break the agent run.
+			try {
+				switch (event.type) {
+					case 'thinking':
+						openThinking();
+						push(event.delta);
+						break;
+					case 'tool_start':
+						// Tool activity shows in the collapsible thinking panel, not in the answer.
+						openThinking();
+						push(`\n🔧 ${describeToolCall(event.name, event.args)}\n`);
+						if (event.name === 'read_note') this.trackReadNote(event.args, notesRead);
+						break;
+					case 'tool_end':
+						openThinking();
+						push(`${event.isError ? '⚠️' : '↳'} ${summarizeToolResult(event.name, event.resultText, event.isError)}\n`);
+						break;
+					case 'text':
+						closeThinking();
+						push(event.delta);
+						break;
 				}
-			};
+			} catch (renderError) {
+				LoggingUtility.error('Error rendering agent event:', renderError);
+			}
+		};
 
-			// Call streaming LLM API with abort signal
-			await this.llmService.sendMessageStream(enhancedContent, conversationHistory, streamCallback, this.currentAbortController.signal);
+		const finish = () => {
+			this.isStreaming = false;
+			this.setSendButtonEnabled(true);
+			this.showStopButton(false);
+			this.currentAbortController = null;
+		};
 
+		try {
+			await this.chatAgent.send(content, onEvent, this.currentAbortController.signal, { context: workspace });
+			closeThinking();
+			await renderChain;
+			assistantMessage.usedNotes = notesRead.size > 0 ? [...notesRead.values()] : undefined;
+			await this.finalizeStreamingMessage(assistantMessage.id);
+			finish();
 		} catch (error) {
-			// Handle error
-			if (error.name === 'AbortError') {
-				// User cancelled - don't change the message content
-				this.isStreaming = false;
-				this.setSendButtonEnabled(true);
-				this.showStopButton(false);
-				this.currentAbortController = null;
-
-				// Finalize the current streaming message as-is
+			closeThinking();
+			await renderChain;
+			finish();
+			if (error?.name === 'AbortError') {
 				const streamingMessage = this.messages.find(m => m.isStreaming);
 				if (streamingMessage) {
 					streamingMessage.isStreaming = false;
-					this.finalizeStreamingMessage(streamingMessage.id);
+					await this.finalizeStreamingMessage(streamingMessage.id);
 				}
 			} else {
-				// Handle actual errors
 				this.handleStreamingError(assistantMessage.id, error);
-				this.isStreaming = false;
-				this.setSendButtonEnabled(true);
-				this.showStopButton(false);
-				this.currentAbortController = null;
+			}
+		}
+	}
+
+	private trackReadNote(args: unknown, notesRead: Map<string, UsedNote>): void {
+		const raw = (args as { path?: unknown } | undefined)?.path;
+		if (typeof raw !== 'string') return;
+		const candidates = [raw, raw.endsWith('.md') ? raw : `${raw}.md`];
+		for (const path of candidates) {
+			const file = this.app.vault.getAbstractFileByPath(path);
+			if (file instanceof TFile) {
+				notesRead.set(file.path, { title: file.basename, path: file.path });
+				return;
 			}
 		}
 	}
@@ -507,16 +440,6 @@ export class ChatView extends ItemView {
 			this.stopButton.addClass('local-llm-stop-button-hidden');
 			this.sendButton.removeClass('local-llm-send-button-hidden');
 			this.sendButton.addClass('local-llm-send-button-visible');
-		}
-	}
-
-	private showSearchIndicator(show: boolean) {
-		if (show) {
-			this.searchIndicator.removeClass('local-llm-search-indicator-hidden');
-			this.searchIndicator.addClass('local-llm-search-indicator-visible');
-		} else {
-			this.searchIndicator.removeClass('local-llm-search-indicator-visible');
-			this.searchIndicator.addClass('local-llm-search-indicator-hidden');
 		}
 	}
 
@@ -1099,7 +1022,6 @@ export class ChatView extends ItemView {
 
 		// Show used notes information for assistant messages
 		if (message.role === 'assistant' && message.usedNotes && message.usedNotes.length > 0) {
-			// Deduplicate notes by path, keeping only the highest relevance score for each unique document
 			const deduplicatedNotes = this.deduplicateNotesByPath(message.usedNotes);
 
 			const notesInfoEl = messageEl.createEl('div', {
@@ -1112,7 +1034,7 @@ export class ChatView extends ItemView {
 
 			// Create header text
 			const headerText = notesHeader.createEl('span', {
-				text: `📚 Used ${deduplicatedNotes.length} note${deduplicatedNotes.length > 1 ? 's' : ''} as context:`
+				text: `📚 Read ${deduplicatedNotes.length} note${deduplicatedNotes.length > 1 ? 's' : ''}:`
 			});
 
 			// Create toggle link
@@ -1161,11 +1083,6 @@ export class ChatView extends ItemView {
 					text: ` (${note.path})`
 				});
 
-				const noteRelevance = noteEl.createEl('span', {
-					cls: 'local-llm-used-note-relevance',
-					text: ` - ${(note.relevance * 100).toFixed(1)}% relevant`
-				});
-
 				// Make the note clickable to open it
 				noteEl.addClass('local-llm-note-clickable');
 				noteEl.addEventListener('click', () => {
@@ -1184,11 +1101,7 @@ export class ChatView extends ItemView {
 		this.messageContainer.scrollTop = this.messageContainer.scrollHeight;
 	}
 
-	/**
-	 * Deduplicate search results by document path, keeping only the highest relevance score for each unique document.
-	 * Assumes input is already sorted by relevance (highest first).
-	 */
-	private deduplicateNotesByPath(notes: SearchResult[]): SearchResult[] {
+	private deduplicateNotesByPath(notes: UsedNote[]): UsedNote[] {
 		const seenPaths = new Set<string>();
 
 		return notes.filter((note) => {
@@ -1224,7 +1137,8 @@ export class ChatView extends ItemView {
 			this.stopStreaming();
 		}
 
-		// Clear all messages
+		// Clear all messages and the agent's conversation
+		this.chatAgent.reset();
 		this.messages = [];
 		this.messageContainer.empty();
 		this.streamingThinkingState.clear();
@@ -1296,129 +1210,4 @@ It looks like your local LLM server isn't running yet. Here's how to get started
 Once your server is running, click the test connection button below.`;
 		}
 	}
-
-	/**
-	 * Update the RAG status area based on current state
-	 */
-	private updateRAGStatus(): void {
-		// Check if currently indexing
-		if (this.plugin.ragService && this.plugin.ragService.isCurrentlyIndexing) {
-			// Will be updated by progress callbacks, don't show stats
-			return;
-		}
-
-		// Show database stats if context mode is "All Notes"
-		if (this.contextMode === ContextMode.SEARCH) {
-			const stats = this.plugin.ragService.getStats();
-			this.showRAGStats(stats.documentCount, stats.fileCount);
-		} else {
-			this.hideRAGStatus();
-		}
-	}
-
-	/**
-	 * Show RAG database statistics
-	 */
-	private showRAGStats(documentCount: number, fileCount: number): void {
-		this.ragStatusContent.empty();
-		const statsEl = this.ragStatusContent.createEl('div', { cls: 'local-llm-rag-stats' });
-		statsEl.createEl('span', { cls: 'local-llm-rag-stats-icon', text: '📚' });
-		statsEl.createEl('span', {
-			cls: 'local-llm-rag-stats-text',
-			text: `RAG Database: ${documentCount.toLocaleString()} paragraphs from ${fileCount.toLocaleString()} files available for context`
-		});
-
-		this.ragStatusArea.removeClass('local-llm-rag-status-paused');
-		this.ragStatusArea.removeClass('local-llm-rag-status-hidden');
-		this.ragStatusArea.addClass('local-llm-rag-status-visible');
-	}
-
-	/**
-	 * Show RAG indexing progress
-	 */
-	showRAGProgress(current: number, total: number, message: string): void {
-		const percentage = total > 0 ? Math.round((current / total) * 100) : 0;
-		const isPaused = this.plugin.ragService.isIndexingPaused || message.toLowerCase().includes('indexing paused');
-		const pauseMessage = this.plugin.ragService.pauseMessage;
-		const resolvedMessage = isPaused && pauseMessage ? pauseMessage : message;
-		const progressMessage = total > 0 && !isPaused ? `${resolvedMessage} (${current}/${total})` : resolvedMessage;
-		const pauseCategory = this.plugin.ragService.pauseCategoryType;
-		const pauseLabel = pauseCategory === 'vision'
-			? 'Paused (Vision)'
-			: pauseCategory === 'embedding'
-				? 'Paused (Embeddings)'
-				: pauseCategory === 'connection'
-					? 'Paused (Connection)'
-					: 'Paused';
-
-		this.ragStatusContent.empty();
-		// Secure DOM manipulation used here (createEl instead of innerHTML) to prevent XSS
-		const progressContainer = this.ragStatusContent.createEl('div', { cls: 'local-llm-rag-progress' });
-
-		const headerEl = progressContainer.createEl('div', { cls: 'local-llm-rag-progress-header' });
-		headerEl.createEl('span', { cls: 'local-llm-rag-progress-icon', text: '⚡' });
-		headerEl.createEl('span', { cls: 'local-llm-rag-progress-text', text: 'Indexing Notes' });
-		if (isPaused) {
-			headerEl.createEl('span', { cls: 'local-llm-rag-paused-pill', text: pauseLabel });
-		}
-
-		const detailsEl = progressContainer.createEl('div', { cls: 'local-llm-rag-progress-details' });
-		detailsEl.createEl('div', { cls: 'local-llm-rag-progress-message', text: progressMessage });
-
-		const barContainer = detailsEl.createEl('div', { cls: 'local-llm-rag-progress-bar-container' });
-		barContainer.createEl('div', {
-			cls: 'local-llm-rag-progress-bar',
-			attr: { style: `width: ${percentage}%` }
-		});
-
-		const footerEl = detailsEl.createEl('div', { cls: 'local-llm-rag-progress-footer' });
-		footerEl.createEl('div', { cls: 'local-llm-rag-progress-percentage', text: `${percentage}%` });
-		if (isPaused) {
-			footerEl.createEl('button', {
-				cls: 'mod-cta local-llm-rag-retry-button',
-				text: 'Retry Indexing',
-				attr: { type: 'button' }
-			});
-		}
-
-		if (isPaused) {
-			this.ragStatusArea.addClass('local-llm-rag-status-paused');
-		} else {
-			this.ragStatusArea.removeClass('local-llm-rag-status-paused');
-		}
-		this.ragStatusArea.removeClass('local-llm-rag-status-hidden');
-		this.ragStatusArea.addClass('local-llm-rag-status-visible');
-
-		if (isPaused) {
-			const retryButton = this.ragStatusContent.querySelector('.local-llm-rag-retry-button') as HTMLButtonElement | null;
-			retryButton?.addEventListener('click', () => {
-				const resumed = this.plugin.ragService.retryPausedIndexing();
-				if (resumed) {
-					retryButton.disabled = true;
-					retryButton.textContent = 'Retrying...';
-				} else {
-					new Notice('Indexing is not currently paused.');
-				}
-			});
-		}
-	}
-
-	/**
-	 * Hide RAG status area
-	 */
-	private hideRAGStatus(): void {
-		this.ragStatusArea.removeClass('local-llm-rag-status-paused');
-		this.ragStatusArea.removeClass('local-llm-rag-status-visible');
-		this.ragStatusArea.addClass('local-llm-rag-status-hidden');
-	}
-
-	/**
-	 * Called when RAG indexing completes
-	 */
-	onRAGIndexingComplete(): void {
-		// Update stats display after a brief delay
-		setTimeout(() => {
-			this.updateRAGStatus();
-		}, 1000);
-	}
-} 
+}

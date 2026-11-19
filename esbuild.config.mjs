@@ -13,6 +13,27 @@ if you want to view the source, please visit the github repository of this plugi
 
 const prod = (process.argv[2] === 'production');
 
+// The Pi harness (pi-ai) lazy-loads one module per cloud provider. The plugin only talks to
+// local OpenAI-compatible servers, so every provider except openai-completions is replaced
+// with a stub. This keeps several MB of cloud SDKs out of main.js.
+const UNUSED_PI_PROVIDERS = /^\.\/(anthropic|azure-openai-responses|google|google-vertex|mistral|openai-codex-responses|openai-responses)\.js$/;
+const stubUnusedPiProviders = {
+	name: 'stub-unused-pi-providers',
+	setup(build) {
+		build.onResolve({ filter: UNUSED_PI_PROVIDERS }, (args) => {
+			if (!args.importer.replace(/\\/g, '/').includes('@mariozechner/pi-ai/dist/providers/')) return undefined;
+			return { path: args.path, namespace: 'pi-provider-stub' };
+		});
+		build.onLoad({ filter: /.*/, namespace: 'pi-provider-stub' }, (args) => ({
+			contents: `const fail = () => { throw new Error(${JSON.stringify('Provider ' + args.path + ' is not bundled in Private AI')}); };
+export const streamAnthropic = fail, streamSimpleAnthropic = fail, streamAzureOpenAIResponses = fail, streamSimpleAzureOpenAIResponses = fail,
+streamGoogle = fail, streamSimpleGoogle = fail, streamGoogleVertex = fail, streamSimpleGoogleVertex = fail, streamMistral = fail, streamSimpleMistral = fail,
+streamOpenAICodexResponses = fail, streamSimpleOpenAICodexResponses = fail, streamOpenAIResponses = fail, streamSimpleOpenAIResponses = fail;`,
+			loader: 'js'
+		}));
+	}
+};
+
 const buildOptions = {
 	banner: {
 		js: banner,
@@ -33,7 +54,8 @@ const buildOptions = {
 		'@lezer/common',
 		'@lezer/highlight',
 		'@lezer/lr',
-		...builtins],
+		...builtins,
+		...builtins.map((m) => `node:${m}`)],
 	format: 'cjs',
 	target: 'es2018',
 	logLevel: "info",
@@ -44,7 +66,7 @@ const buildOptions = {
 	loader: {
 		".wasm": "binary",
 	},
-	plugins: [],
+	plugins: [stubUnusedPiProviders],
 };
 
 if (!prod) {

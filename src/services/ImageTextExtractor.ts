@@ -6,6 +6,8 @@ export interface ImageTextExtractionResult {
 	success: boolean;
 	extractedText: string;
 	error?: string;
+	/** The model could not be asked or gave no answer (as opposed to finding no text). */
+	failed?: boolean;
 	modelCapabilities?: {
 		supportsVision: boolean;
 		modelName?: string;
@@ -109,8 +111,20 @@ export class ImageTextExtractor {
 			// Send vision message with image and prompt
 			const response = await this.llmService.sendVisionMessage(visionPrompt, imageData);
 
-			// Check if the response indicates no text was found
-			if (response.toLowerCase().includes('no text found') || response.toLowerCase().includes('cannot see')) {
+			const text = response.trim();
+			if (!text || text === 'No response content') {
+				return {
+					success: false,
+					extractedText: '',
+					error: 'The model returned an empty reply',
+					failed: true
+				};
+			}
+
+			// Only a short reply can be a "no text" verdict; a long one that happens to
+			// contain these words is a transcription.
+			const lower = text.toLowerCase();
+			if (text.length < 200 && (lower.includes('no text found') || lower.includes('cannot see'))) {
 				return {
 					success: false,
 					extractedText: '',
@@ -129,6 +143,7 @@ export class ImageTextExtractor {
 				success: false,
 				extractedText: '',
 				error: `Extraction failed: ${error.message}`,
+				failed: true,
 				modelCapabilities: this.visionCapabilities || { supportsVision: false }
 			};
 		}

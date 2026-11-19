@@ -1,16 +1,15 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { fauxAssistantMessage, fauxText, fauxToolCall, registerFauxProvider, FauxProviderRegistration } from '@mariozechner/pi-ai';
+
+// End-to-end through the real stack: ChatView -> Pi agent loop -> built-in MCP server
+// -> vault tools -> BM25 search over the files. Only the language model is scripted
+// (Pi's faux provider), and Obsidian's API is stubbed.
 
 const llmMock = {
-  testConnection: vi.fn(),
-  sendMessageStream: vi.fn()
+  testConnection: vi.fn()
 };
 
 vi.mock('../src/main', () => ({
-  ContextMode: {
-    OPEN_NOTES: 'open-notes',
-    SEARCH: 'search',
-    NONE: 'none'
-  },
   default: class {}
 }));
 
@@ -19,7 +18,14 @@ vi.mock('../src/services/LLMService', () => ({
 }));
 
 import { ChatView } from '../src/views/ChatView';
-import { WorkspaceLeaf, MarkdownView } from 'obsidian';
+import { WorkspaceLeaf, TFile } from 'obsidian';
+import { PiChatAgent } from '../src/agent/pi/PiChatAgent';
+import { loadMcpTools } from '../src/agent/pi/mcpTools';
+import { createVaultTools, describeWorkspace } from '../src/agent/tools/vaultTools';
+import { createVaultMcpServer } from '../src/agent/mcp/vaultMcpServer';
+import { connectInProcess } from '../src/agent/mcp/inProcessClient';
+import { VaultSearch } from '../src/agent/search/VaultSearch';
+import { InMemoryVault } from './mocks/InMemoryVault';
 
 // --- Test data ---
 
@@ -86,82 +92,44 @@ const HAYSTACK_FILES = [
 
 // --- Helpers ---
 
-function createPluginStub(contextMode: string) {
+let faux: FauxProviderRegistration;
+
+function createPluginStub(
+  files: Array<{ path: string; content: string }>,
+  workspace: { active?: string; open?: string[] } = {},
+) {
+  const vault = new InMemoryVault(Object.fromEntries(files.map((f) => [f.path, f.content])));
+  vault.active = workspace.active ?? null;
+  vault.open = workspace.open ?? [];
+  const search = new VaultSearch(vault);
+  const server = createVaultMcpServer(createVaultTools({ vault, search, confirm: async () => true }), { version: 'test', allowWrites: () => true });
+  const clientPromise = connectInProcess(server);
+  const settings = {
+    apiEndpoint: 'http://localhost:1234/v1/chat/completions',
+    apiKey: '',
+    maxTokens: 2048,
+    temperature: 0.7,
+    systemPrompt: 'Be concise',
+    model: 'test-model',
+    maxToolRounds: 5,
+    contextWindow: 32768,
+    contextNotesVisible: false,
+  };
   return {
-    settings: {
-      apiEndpoint: 'http://localhost:1234/v1/chat/completions',
-      apiKey: '',
-      maxTokens: 2048,
-      temperature: 0.7,
-      systemPrompt: 'Be concise',
-      model: undefined,
-      contextMode,
-      ragMaxResults: 5,
-      ragThreshold: 0.1,
-      searchContextPercentage: 50,
-      contextNotesVisible: false,
-    },
-    ragService: {
-      isCurrentlyIndexing: false,
-      isIndexEmpty: () => true,
-      getStats: () => ({ documentCount: 0, fileCount: 0 }),
-    },
+    settings,
+    agentRuntime: { search, imageCache: { count: 0 }, workspaceContext: () => `[Obsidian workspace]\n${describeWorkspace(vault, search)}` },
+    createChatAgent: () => new PiChatAgent({
+      settings: () => settings,
+      loadTools: async () => loadMcpTools(await clientPromise),
+      buildModel: () => faux.getModel(),
+    }),
     saveSettings: vi.fn(async () => undefined),
   };
 }
 
-function createAppStubForOpenNotes() {
-  const quantumFile = { ...QUANTUM_ARTICLE };
-  const recipeFile = { ...RECIPE_ARTICLE };
-
-  const quantumLeaf = {
-    view: Object.assign(new MarkdownView(quantumFile), { file: quantumFile }),
-  };
-  const recipeLeaf = {
-    view: Object.assign(new MarkdownView(recipeFile), { file: recipeFile }),
-  };
-
-  return {
-    workspace: {
-      openLinkText: vi.fn(),
-      getLeavesOfType: vi.fn((type: string) => {
-        if (type === 'markdown') return [quantumLeaf, recipeLeaf];
-        return [];
-      }),
-      getActiveViewOfType: vi.fn(() => null),
-    },
-    vault: {
-      cachedRead: vi.fn(async (file: any) => {
-        if (file.path === QUANTUM_ARTICLE.path) return QUANTUM_ARTICLE.content;
-        if (file.path === RECIPE_ARTICLE.path) return RECIPE_ARTICLE.content;
-        return '';
-      }),
-      getMarkdownFiles: vi.fn(() => []),
-    },
-    metadataCache: {
-      getFileCache: vi.fn((file: any) => {
-        if (file.path === QUANTUM_ARTICLE.path) {
-          return {
-            headings: [{ heading: 'Quantum Computing Advances', level: 1 }],
-            tags: [{ tag: '#physics' }, { tag: '#quantum' }],
-          };
-        }
-        if (file.path === RECIPE_ARTICLE.path) {
-          return {
-            headings: [{ heading: 'Sourdough Bread Recipe', level: 1 }],
-            tags: [{ tag: '#cooking' }, { tag: '#bread' }],
-          };
-        }
-        return null;
-      }),
-    },
-    setting: { open: vi.fn(), openTabById: vi.fn() },
-  };
-}
-
-function createAppStubForSearch() {
-  const files = HAYSTACK_FILES.map((f) => ({ ...f }));
-
+function createAppStub(files: Array<{ path: string; basename: string; extension: string; content: string }>) {
+  // Real TFile instances, so the chat can list the notes the agent read.
+  const tfiles = files.map((f) => Object.assign(new TFile(), { path: f.path, basename: f.basename, extension: f.extension }));
   return {
     workspace: {
       openLinkText: vi.fn(),
@@ -169,23 +137,11 @@ function createAppStubForSearch() {
       getActiveViewOfType: vi.fn(() => null),
     },
     vault: {
-      cachedRead: vi.fn(async (file: any) => {
-        const found = HAYSTACK_FILES.find((f) => f.path === file.path);
-        return found ? found.content : '';
-      }),
-      getMarkdownFiles: vi.fn(() => files),
+      cachedRead: vi.fn(async () => ''),
+      getMarkdownFiles: vi.fn(() => tfiles),
+      getAbstractFileByPath: vi.fn((path: string) => tfiles.find((f) => f.path === path) ?? null),
     },
-    metadataCache: {
-      getFileCache: vi.fn((file: any) => {
-        if (file.path === 'research/superconductor-breakthrough.md') {
-          return {
-            headings: [{ heading: 'Room Temperature Superconductor', level: 1 }],
-            tags: [{ tag: '#physics' }, { tag: '#superconductor' }],
-          };
-        }
-        return { headings: [], tags: [] };
-      }),
-    },
+    metadataCache: { getFileCache: vi.fn(() => null) },
     setting: { open: vi.fn(), openTabById: vi.fn() },
   };
 }
@@ -196,105 +152,107 @@ async function flushRenderTicks(n = 2): Promise<void> {
   }
 }
 
+async function waitFor(check: () => boolean, timeoutMs = 2000): Promise<void> {
+  const start = Date.now();
+  while (!check()) {
+    if (Date.now() - start > timeoutMs) throw new Error('Timed out waiting for the chat to finish');
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
+const isIdle = (view: ChatView) => !(view as any).isStreaming && !(view as any).messages.some((m: any) => m.isStreaming);
+
 // --- Tests ---
 
-describe('Integration: end-to-end context pipeline', () => {
+describe('Integration: chat view through the Pi agent and MCP tools', () => {
   beforeEach(() => {
     llmMock.testConnection.mockReset();
-    llmMock.sendMessageStream.mockReset();
+    llmMock.testConnection.mockResolvedValue({ success: true });
+    faux = registerFauxProvider({ tokensPerSecond: 100000 });
   });
 
-  it('OPEN_NOTES mode: open note content reaches the LLM and response renders', async () => {
-    llmMock.testConnection.mockResolvedValue({ success: true });
+  afterEach(() => {
+    faux.unregister();
+  });
 
-    let capturedEnhancedMessage = '';
-    llmMock.sendMessageStream.mockImplementation(
-      async (message: string, _history: any[], callback: (chunk: string, done: boolean) => Promise<void>) => {
-        capturedEnhancedMessage = message;
-        await callback('The quantum article covers a 1000-qubit processor, and the recipe describes a 72-hour cold ferment.', false);
-        await callback('', true);
-      },
-    );
-
-    const app = createAppStubForOpenNotes();
-    const leaf = new WorkspaceLeaf(app);
-    const view = new ChatView(leaf as any, createPluginStub('open-notes') as any);
-    await view.onOpen();
-
+  async function ask(view: ChatView, question: string): Promise<void> {
     const input = view.containerEl.querySelector('textarea') as HTMLTextAreaElement;
-    const sendButton = view.containerEl.querySelector('.local-llm-send-button') as HTMLButtonElement;
+    input.value = question;
+    (view.containerEl.querySelector('.local-llm-send-button') as HTMLButtonElement).click();
+    await flushRenderTicks(2);
+    await waitFor(() => isIdle(view));
+  }
 
-    input.value = 'summarize the current articles';
-    sendButton.click();
-    await flushRenderTicks(8);
+  it('tells the model which note is open, and it reads that note for "this note" questions', async () => {
+    let firstUserMessage = '';
+    let readResult = '';
+    faux.setResponses([
+      (context) => {
+        firstUserMessage = JSON.stringify(context.messages[0]);
+        return fauxAssistantMessage([fauxToolCall('read_note', { path: QUANTUM_ARTICLE.path })], { stopReason: 'toolUse' });
+      },
+      (context) => {
+        readResult = JSON.stringify(context.messages.filter((m) => m.role === 'toolResult')[0]);
+        return fauxAssistantMessage(fauxText('This note covers a 1000-qubit processor with error correction.'));
+      },
+    ]);
 
-    // The enhanced message wraps vault context around the user question
-    expect(capturedEnhancedMessage).toContain('Context from your Obsidian vault:');
-    expect(capturedEnhancedMessage).toContain('User question: summarize the current articles');
-    expect(capturedEnhancedMessage).toContain('--- RELEVANT OBSIDIAN NOTES ---');
+    const files = [QUANTUM_ARTICLE, RECIPE_ARTICLE];
+    const view = new ChatView(
+      new WorkspaceLeaf(createAppStub(files)) as any,
+      createPluginStub(files, { active: QUANTUM_ARTICLE.path, open: [QUANTUM_ARTICLE.path, RECIPE_ARTICLE.path] }) as any,
+    );
+    await view.onOpen();
+    await ask(view, 'summarize this note');
 
-    // Both notes' content is included
-    expect(capturedEnhancedMessage).toContain('1000-qubit quantum processor');
-    expect(capturedEnhancedMessage).toContain('topological qubits');
-    expect(capturedEnhancedMessage).toContain('72-hour cold ferment');
-    expect(capturedEnhancedMessage).toContain('500g bread flour');
+    // Paths only: the model decides what to read.
+    expect(firstUserMessage).toContain('[Obsidian workspace]');
+    expect(firstUserMessage).toContain(`Active note: ${QUANTUM_ARTICLE.path}`);
+    expect(firstUserMessage).toContain(`- ${RECIPE_ARTICLE.path}`);
+    expect(firstUserMessage).toContain('User question: summarize this note');
+    expect(firstUserMessage).not.toContain('1000-qubit');
+    expect(readResult).toContain('1000-qubit quantum processor');
 
-    // Titles and full relevance for open notes
-    expect(capturedEnhancedMessage).toContain('Quantum Computing Advances');
-    expect(capturedEnhancedMessage).toContain('Sourdough Bread Recipe');
-    expect(capturedEnhancedMessage).toContain('Relevance: 100.0%');
-
-    // LLM response renders in the DOM
     const rendered = view.containerEl.textContent ?? '';
-    expect(rendered).toContain('1000-qubit processor');
-    expect(rendered).toContain('72-hour cold ferment');
-
-    expect(llmMock.sendMessageStream).toHaveBeenCalledTimes(1);
+    expect(rendered).toContain('1000-qubit processor with error correction');
+    expect(rendered).toContain('Read 1 note');
+    expect(rendered).not.toContain('relevant');
+    expect(view.containerEl.querySelector('.local-llm-context-mode-container')).toBeNull();
   });
 
-  it('SEARCH mode: keyword search finds needle file and excludes irrelevant notes', async () => {
-    llmMock.testConnection.mockResolvedValue({ success: true });
-
-    let capturedEnhancedMessage = '';
-    llmMock.sendMessageStream.mockImplementation(
-      async (message: string, _history: any[], callback: (chunk: string, done: boolean) => Promise<void>) => {
-        capturedEnhancedMessage = message;
-        await callback('The xylophone-paradox-7 discovery appears in the superconductor note about LK-99.', false);
-        await callback('', true);
+  it('searches the whole vault for other questions, with BM25', async () => {
+    let searchResult = '';
+    let firstUserMessage = '';
+    let toolNames: string[] = [];
+    faux.setResponses([
+      (context) => {
+        firstUserMessage = JSON.stringify(context.messages[0]);
+        toolNames = (context.tools ?? []).map((t) => t.name);
+        return fauxAssistantMessage([fauxToolCall('search_notes', { query: 'xylophone-paradox-7 superconductor' })], { stopReason: 'toolUse' });
       },
-    );
+      (context) => {
+        searchResult = JSON.stringify(context.messages.filter((m) => m.role === 'toolResult')[0]);
+        return fauxAssistantMessage([fauxToolCall('read_note', { path: 'research/superconductor-breakthrough.md' })], { stopReason: 'toolUse' });
+      },
+      fauxAssistantMessage(fauxText('The xylophone-paradox-7 discovery appears in the superconductor note about LK-99.')),
+    ]);
 
-    const app = createAppStubForSearch();
-    const leaf = new WorkspaceLeaf(app);
-    const view = new ChatView(leaf as any, createPluginStub('search') as any);
+    const view = new ChatView(new WorkspaceLeaf(createAppStub(HAYSTACK_FILES)) as any, createPluginStub(HAYSTACK_FILES) as any);
     await view.onOpen();
+    // No indexing or search status line in the chat.
+    expect(view.containerEl.querySelector('.local-llm-rag-status-area')).toBeNull();
+    await ask(view, 'xylophone-paradox-7 superconductor');
 
-    const input = view.containerEl.querySelector('textarea') as HTMLTextAreaElement;
-    const sendButton = view.containerEl.querySelector('.local-llm-send-button') as HTMLButtonElement;
+    expect(toolNames).toContain('search_notes');
+    expect(toolNames).toContain('read_note');
+    expect(firstUserMessage).toContain('Active note: (none)');
+    expect(searchResult).toContain('research/superconductor-breakthrough.md');
+    expect(searchResult).not.toContain('grocery-list');
+    expect(searchResult).not.toContain('travel-plans');
 
-    input.value = 'xylophone-paradox-7 superconductor';
-    sendButton.click();
-    await flushRenderTicks(8);
-
-    // The enhanced message contains vault context
-    expect(capturedEnhancedMessage).toContain('Context from your Obsidian vault:');
-    expect(capturedEnhancedMessage).toContain('User question: xylophone-paradox-7 superconductor');
-
-    // The needle file IS in the context
-    expect(capturedEnhancedMessage).toContain('xylophone-paradox-7');
-    expect(capturedEnhancedMessage).toContain('Room Temperature Superconductor');
-    expect(capturedEnhancedMessage).toContain('superconductor-breakthrough.md');
-
-    // Irrelevant files are NOT in the context
-    expect(capturedEnhancedMessage).not.toContain('grocery-list');
-    expect(capturedEnhancedMessage).not.toContain('Milk');
-    expect(capturedEnhancedMessage).not.toContain('Chicken breast');
-
-    // LLM response renders in the DOM
     const rendered = view.containerEl.textContent ?? '';
     expect(rendered).toContain('xylophone-paradox-7 discovery');
-    expect(rendered).toContain('LK-99');
-
-    expect(llmMock.sendMessageStream).toHaveBeenCalledTimes(1);
+    expect(rendered).toContain('Thought process');
+    expect(rendered).toContain('Read 1 note');
   });
 });

@@ -66,3 +66,37 @@ describe('LLMService request contract', () => {
     expect(requestArgs.headers.Authorization).toBe('Bearer secret-key');
   });
 });
+
+describe('LLMService default chat model', () => {
+  const service = () => new LLMService({ apiEndpoint: 'http://localhost:1234/v1/chat/completions' });
+
+  it('prefers the model already loaded in LM Studio over the first one listed', async () => {
+    global.__requestUrlMock.mockResolvedValue({
+      status: 200,
+      json: {
+        models: [
+          { type: 'llm', key: 'qwen/first-listed', loaded_instances: [] },
+          { type: 'embedding', key: 'text-embedding-loaded', loaded_instances: [{ id: 'text-embedding-loaded' }] },
+          { type: 'llm', key: 'google/gemma-loaded', loaded_instances: [{ id: 'google/gemma-loaded' }] }
+        ]
+      }
+    });
+
+    expect(await service().getDefaultChatModel()).toBe('google/gemma-loaded');
+  });
+
+  it('falls back to the first chat model when none is loaded', async () => {
+    global.__requestUrlMock.mockResolvedValue({
+      status: 200,
+      json: {
+        models: [
+          { type: 'embedding', key: 'text-embedding-a', loaded_instances: [] },
+          { type: 'llm', key: 'qwen/first-listed', loaded_instances: [] },
+          { type: 'llm', key: 'google/gemma', loaded_instances: [] }
+        ]
+      }
+    });
+
+    expect(await service().getDefaultChatModel()).toBe('qwen/first-listed');
+  });
+});

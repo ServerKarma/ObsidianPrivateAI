@@ -16,7 +16,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
 
       - name: Install dependencies
@@ -24,3 +24,32 @@ jobs:
 
       - name: Run tests
         run: npm run test
+
+  e2e:
+    # Boots real Obsidian with the test vault and runs the agent evals offline
+    # (scripted OpenAI-compatible server instead of LM Studio).
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build plugin
+        run: npm run build
+
+      - name: Cache Obsidian binaries
+        uses: actions/cache@v4
+        with:
+          path: .obsidian-cache
+          key: obsidian-cache-${{ runner.os }}
+
+      - name: Run evals in Obsidian
+        run: xvfb-run -a npm run eval:offline

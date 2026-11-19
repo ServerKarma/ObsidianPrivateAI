@@ -1,16 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const llmMock = {
-  testConnection: vi.fn(),
-  sendMessageStream: vi.fn()
+  testConnection: vi.fn()
+};
+
+// Stands in for the Pi chat agent. Tests script it like a token stream:
+// each chunk becomes a text event, exactly as the real agent emits them.
+const agentMock = {
+  send: vi.fn(),
+  reset: vi.fn()
 };
 
 vi.mock('../src/main', () => ({
-  ContextMode: {
-    OPEN_NOTES: 'open-notes',
-    SEARCH: 'search',
-    NONE: 'none'
-  },
   default: class {}
 }));
 
@@ -30,16 +31,10 @@ function createPluginStub() {
       temperature: 0.7,
       systemPrompt: 'Be concise',
       model: undefined,
-      contextMode: 'none',
-      ragMaxResults: 5,
-      ragThreshold: 0.3,
-      searchContextPercentage: 50,
       contextNotesVisible: false
     },
-    ragService: {
-      isCurrentlyIndexing: false,
-      getStats: () => ({ documentCount: 0, fileCount: 0 })
-    },
+    agentRuntime: { workspaceContext: () => '[Obsidian workspace]\nActive note: (none)' },
+    createChatAgent: () => agentMock,
     saveSettings: vi.fn(async () => undefined)
   };
 }
@@ -74,7 +69,7 @@ async function flushRenderTicks(iterations: number = 2): Promise<void> {
 describe('Obsidian chat smoke test', () => {
   beforeEach(() => {
     llmMock.testConnection.mockReset();
-    llmMock.sendMessageStream.mockReset();
+    agentMock.send.mockReset();
   });
 
   it('opens chat view and renders ready state', async () => {
@@ -87,13 +82,19 @@ describe('Obsidian chat smoke test', () => {
     await view.onOpen();
 
     const content = view.containerEl.children[1].textContent ?? '';
-    expect(content).toContain('Private AI chat');
+    expect(content).not.toContain('Private AI chat');
+    expect(view.containerEl.querySelector('.local-llm-chat-header h4')).toBeNull();
+    expect(view.containerEl.querySelector('.local-llm-new-chat-button')).not.toBeNull();
+    // Settings on the left, New chat on the right.
+    const buttons = [...view.containerEl.querySelectorAll('.local-llm-header-buttons > button')].map((b) => b.className);
+    expect(buttons).toEqual(['local-llm-settings-button', 'local-llm-new-chat-button']);
     expect(content).toContain("What's on your mind?");
   });
 
   it('sends a prompt and streams assistant response', async () => {
     llmMock.testConnection.mockResolvedValue({ success: true });
-    llmMock.sendMessageStream.mockImplementation(async (_message: string, _history: any[], callback: (chunk: string, done: boolean) => Promise<void>) => {
+    agentMock.send.mockImplementation(async (_message: string, onEvent: (event: any) => void) => {
+      const callback = async (chunk: string, done: boolean) => { if (!done && chunk) onEvent({ type: 'text', delta: chunk }); };
       await callback('Hello', false);
       await callback(' from test', false);
       await callback('', true);
@@ -117,7 +118,7 @@ describe('Obsidian chat smoke test', () => {
     const rendered = view.containerEl.textContent ?? '';
     expect(rendered).toContain('ping');
     expect(rendered).toContain('Hello from test');
-    expect(llmMock.sendMessageStream).toHaveBeenCalledTimes(1);
+    expect(agentMock.send).toHaveBeenCalledTimes(1);
   });
 
   it('streams think tags into collapsible thinking blocks without exposing raw tags', async () => {
@@ -132,7 +133,8 @@ describe('Obsidian chat smoke test', () => {
       releaseFinish = resolve;
     });
 
-    llmMock.sendMessageStream.mockImplementation(async (_message: string, _history: any[], callback: (chunk: string, done: boolean) => Promise<void>) => {
+    agentMock.send.mockImplementation(async (_message: string, onEvent: (event: any) => void) => {
+      const callback = async (chunk: string, done: boolean) => { if (!done && chunk) onEvent({ type: 'text', delta: chunk }); };
       await callback('<think>1. Analyze request\n2. Gather context', false);
       await stepTwoGate;
       await callback('\n3. Identify constraints\n4. Draft response\n5. Final pass', false);
@@ -210,7 +212,8 @@ describe('Obsidian chat smoke test', () => {
       chunkGates.push(resolve);
     });
 
-    llmMock.sendMessageStream.mockImplementation(async (_message: string, _history: any[], callback: (chunk: string, done: boolean) => Promise<void>) => {
+    agentMock.send.mockImplementation(async (_message: string, onEvent: (event: any) => void) => {
+      const callback = async (chunk: string, done: boolean) => { if (!done && chunk) onEvent({ type: 'text', delta: chunk }); };
       await callback('<think>1. Start', false);
       for (let step = 2; step <= 6; step++) {
         await waitForChunkGate();
