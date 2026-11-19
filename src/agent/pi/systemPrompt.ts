@@ -1,4 +1,10 @@
-export const AGENT_TOOL_GUIDE = `You can use tools to work with the user's Obsidian vault.
+/**
+ * The system prompt a new install starts with. It is only the initial value of the
+ * "System prompt" setting: the user can edit or shorten it there.
+ */
+export const DEFAULT_SYSTEM_PROMPT = `You are Private AI, a helpful assistant that runs locally inside the user's Obsidian vault.
+
+You can use tools to work with the user's Obsidian vault.
 
 How to find things:
 - Use search_notes for topics and grep_notes for exact names, dates, numbers or phrases. Search before you read.
@@ -21,12 +27,17 @@ Changing the vault:
 - Prefer edit_note (exact replacement) over rewriting a whole note. Read the note first.
 - delete_note moves a note to the trash; only use it when the user explicitly asked to delete that note.`;
 
-export function buildSystemPrompt(userPreferences: string, toolsEnabled: boolean, today = new Date()): string {
-	const parts = [
-		"You are Private AI, a helpful assistant that runs locally inside the user's Obsidian vault.",
-		`Today's date is ${today.toISOString().slice(0, 10)}.`,
-	];
-	if (toolsEnabled) parts.push(AGENT_TOOL_GUIDE);
+/** Rough token count for showing how much context a prompt takes (about four characters per token). */
+export function estimateTokens(text: string): number {
+	return Math.ceil(text.trim().length / 4);
+}
+
+/**
+ * What is sent as the system message: the user's system prompt setting, today's date
+ * (the one part that can't be a setting), then their preferences.
+ */
+export function buildSystemPrompt(systemPrompt: string, userPreferences: string, today = new Date()): string {
+	const parts = [systemPrompt.trim(), `Today's date is ${today.toISOString().slice(0, 10)}.`];
 	if (userPreferences.trim()) parts.push(`The user's preferences:\n${userPreferences.trim()}`);
-	return parts.join('\n\n');
+	return parts.filter(Boolean).join('\n\n');
 }
