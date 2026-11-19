@@ -20,7 +20,16 @@ const cors = {
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
 };
 
-export async function startFakeLmStudio(respond: (body: any) => FakeReply): Promise<FakeLmStudio> {
+export interface FakeLmStudioOptions {
+    /**
+     * The downloaded models to report, in the shape of LM Studio's /api/v1/models
+     * (key, type, size_bytes, loaded_instances, capabilities). Left out, the server
+     * reports one model called "mock-model" with no capability information.
+     */
+    restModels?: object[];
+}
+
+export async function startFakeLmStudio(respond: (body: any) => FakeReply, options: FakeLmStudioOptions = {}): Promise<FakeLmStudio> {
     const requests: any[] = [];
     let callCounter = 0;
     const server = http.createServer((req, res) => {
@@ -31,7 +40,13 @@ export async function startFakeLmStudio(respond: (body: any) => FakeReply): Prom
         }
         if (req.method === "GET") {
             res.writeHead(200, { ...cors, "Content-Type": "application/json" });
-            res.end(JSON.stringify({ data: [{ id: "mock-model" }] }));
+            const rest = options.restModels;
+            const listing = !rest
+                ? { data: [{ id: "mock-model" }] }
+                : req.url?.startsWith("/api/v1/models")
+                    ? { models: rest }
+                    : { data: rest.map((m: any) => ({ id: m.key, object: "model" })) };
+            res.end(JSON.stringify(listing));
             return;
         }
         let raw = "";
