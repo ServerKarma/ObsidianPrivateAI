@@ -3,7 +3,7 @@ import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import type { AgentTool } from '@mariozechner/pi-agent-core';
 import { ObsidianVaultAdapter } from './ObsidianVaultAdapter';
-import { ImageTextCache, ImageTextSource } from './ImageTextCache';
+import { ImageProcessResult, ImageTextCache, ImageTextSource } from './ImageTextCache';
 import { VaultSearch } from '../search/VaultSearch';
 import { createVaultTools, describeWorkspace, VaultToolDefinition } from '../tools/vaultTools';
 import { createModalConfirm } from './ConfirmChangeModal';
@@ -80,18 +80,24 @@ export class AgentRuntime {
 		return this.search.refresh();
 	}
 
-	pendingImages(): TFile[] {
+	private visibleImages(): TFile[] {
 		const images = this.options.app.vault.getFiles().filter((f) => isImage(f) && this.search.isVisible(f.path));
 		this.imageCache.prune(new Set(images.map((f) => f.path)));
-		return this.imageCache.pending(images);
+		return images;
+	}
+
+	pendingImages(retryEmpty = false): TFile[] {
+		return this.imageCache.pending(this.visibleImages(), retryEmpty);
 	}
 
 	async processImages(
 		source: ImageTextSource,
 		onProgress?: (done: number, total: number, path: string) => void,
 		signal?: AbortSignal,
-	): Promise<{ processed: number; failed: number }> {
-		const result = await this.imageCache.process(this.pendingImages(), source, onProgress, signal);
+		/** Also re-read images where no text was found last time. */
+		retryEmpty = false,
+	): Promise<ImageProcessResult> {
+		const result = await this.imageCache.process(this.visibleImages(), source, onProgress, signal, retryEmpty);
 		await this.search.refresh();
 		return result;
 	}

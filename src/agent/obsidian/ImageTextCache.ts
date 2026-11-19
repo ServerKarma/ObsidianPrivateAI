@@ -8,13 +8,28 @@ interface CacheEntry {
 	text: string;
 }
 
+const CACHE_VERSION = 2;
+
 interface CacheFile {
-	version: 1;
+	version: number;
 	entries: Record<string, CacheEntry>;
 }
 
 export interface ImageTextSource {
-	extractTextFromImage(file: TFile): Promise<{ success: boolean; extractedText: string; error?: string }>;
+	/**
+	 * `failed` means the model could not be asked (request error, empty reply), as opposed
+	 * to the model looking at the image and finding no text.
+	 */
+	extractTextFromImage(file: TFile): Promise<{ success: boolean; extractedText: string; error?: string; failed?: boolean }>;
+}
+
+export interface ImageProcessResult {
+	/** Images text was read from. */
+	processed: number;
+	/** Images the model looked at and found no text in. */
+	empty: number;
+	/** Images that could not be read this time; they are tried again on the next run. */
+	failed: number;
 }
 
 /**
@@ -32,7 +47,12 @@ export class ImageTextCache implements ExtraTextProvider {
 		try {
 			if (await this.app.vault.adapter.exists(this.filePath)) {
 				const parsed = JSON.parse(await this.app.vault.adapter.read(this.filePath)) as CacheFile;
-				this.entries = parsed?.entries ?? {};
+				const entries = parsed?.entries ?? {};
+				// Version 1 also recorded failed requests as "no text", which then were never
+				// retried. Those can't be told apart from real blanks, so read them all again.
+				this.entries = parsed?.version === CACHE_VERSION
+					? entries
+					: Object.fromEntries(Object.entries(entries).filter(([, e]) => !!e?.text));
 			}
 		} catch {
 			this.entries = {};
@@ -43,18 +63,23 @@ export class ImageTextCache implements ExtraTextProvider {
 		return Object.keys(this.entries).length;
 	}
 
+	/** How many images have text that search can find. */
+	get withTextCount(): number {
+		return Object.values(this.entries).filter((e) => !!e.text).length;
+	}
+
 	getText(file: VaultFileInfo): string | undefined {
 		const entry = this.entries[file.path];
 		if (!entry || entry.mtime !== file.mtime || entry.size !== file.size) return undefined;
 		return entry.text || undefined;
 	}
 
-	/** Images whose text is missing or stale. */
-	pending(files: TFile[]): TFile[] {
+	/** Images whose text is missing or stale; with `retryEmpty`, also those where no text was found. */
+	pending(files: TFile[], retryEmpty = false): TFile[] {
 		return files.filter((f) => {
 			if (!isImage(f)) return false;
 			const e = this.entries[f.path];
-			return !e || e.mtime !== f.stat.mtime || e.size !== f.stat.size;
+			return !e || e.mtime !== f.stat.mtime || e.size !== f.stat.size || (retryEmpty && !e.text);
 		});
 	}
 
@@ -63,24 +88,37 @@ export class ImageTextCache implements ExtraTextProvider {
 		source: ImageTextSource,
 		onProgress?: (done: number, total: number, path: string) => void,
 		signal?: AbortSignal,
-	): Promise<{ processed: number; failed: number }> {
-		const todo = this.pending(files);
+		retryEmpty = false,
+	): Promise<ImageProcessResult> {
+		const todo = this.pending(files, retryEmpty);
 		let processed = 0;
+		let empty = 0;
 		let failed = 0;
 		for (let i = 0; i < todo.length; i++) {
 			if (signal?.aborted) break;
 			const file = todo[i];
 			onProgress?.(i, todo.length, file.path);
-			const result = await source.extractTextFromImage(file);
-			// Record failures with empty text too, so they aren't retried until the image changes.
-			this.entries[file.path] = { mtime: file.stat.mtime, size: file.stat.size, text: result.success ? result.extractedText : '' };
-			if (result.success) processed++;
-			else failed++;
+			let result: Awaited<ReturnType<ImageTextSource['extractTextFromImage']>>;
+			try {
+				result = await source.extractTextFromImage(file);
+			} catch (error) {
+				result = { success: false, extractedText: '', failed: true, error: String(error) };
+			}
+			const text = result.success ? result.extractedText.trim() : '';
+			if (!text && result.failed) {
+				// Nothing was learned about this image: leave it pending so the next run retries it.
+				failed++;
+				continue;
+			}
+			// "No text" is recorded too, so a blank image isn't re-read until it changes.
+			this.entries[file.path] = { mtime: file.stat.mtime, size: file.stat.size, text };
+			if (text) processed++;
+			else empty++;
 			this.scheduleSave();
 		}
 		onProgress?.(todo.length, todo.length, '');
 		await this.save();
-		return { processed, failed };
+		return { processed, empty, failed };
 	}
 
 	/** Drops entries for images that no longer exist. */
@@ -102,7 +140,7 @@ export class ImageTextCache implements ExtraTextProvider {
 			window.clearTimeout(this.saveTimer);
 			this.saveTimer = null;
 		}
-		const data: CacheFile = { version: 1, entries: this.entries };
+		const data: CacheFile = { version: CACHE_VERSION, entries: this.entries };
 		await this.app.vault.adapter.write(this.filePath, JSON.stringify(data));
 	}
 }

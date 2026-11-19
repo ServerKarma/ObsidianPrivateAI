@@ -93,7 +93,8 @@ export default class LocalLLMPlugin extends Plugin {
 			apiKey: this.settings.apiKey,
 			maxTokens: this.settings.maxTokens,
 			temperature: this.settings.temperature,
-			systemPrompt: this.settings.systemPrompt
+			systemPrompt: this.settings.systemPrompt,
+			model: this.settings.model
 		});
 
 		// Agent runtime: BM25/grep search, vault tools and the built-in MCP server
@@ -220,9 +221,13 @@ export default class LocalLLMPlugin extends Plugin {
 			}
 			const result = await this.agentRuntime.processImages(extractor, (done, total, path) => {
 				LoggingUtility.log(`Reading image text ${done}/${total}: ${path}`);
-			}, controller.signal);
+			}, controller.signal, !background); // a manual run also re-reads images that had no text
 			if (!background || result.processed > 0) {
-				new Notice(`Private AI read text from ${result.processed} image${result.processed === 1 ? '' : 's'}${result.failed ? ` (${result.failed} had no text)` : ''}.`);
+				const details = [
+					result.empty ? `${result.empty} had no text` : '',
+					result.failed ? `${result.failed} could not be read and will be tried again` : ''
+				].filter(Boolean).join('; ');
+				new Notice(`Private AI read text from ${result.processed} image${result.processed === 1 ? '' : 's'}${details ? ` (${details})` : ''}.`, result.failed ? 8000 : undefined);
 			}
 		} catch (error) {
 			LoggingUtility.error('Image processing failed:', error);
@@ -269,7 +274,8 @@ export default class LocalLLMPlugin extends Plugin {
 				apiKey: this.settings.apiKey,
 				maxTokens: this.settings.maxTokens,
 				temperature: this.settings.temperature,
-				systemPrompt: this.settings.systemPrompt
+				systemPrompt: this.settings.systemPrompt,
+				model: this.settings.model
 			});
 
 		}
@@ -647,7 +653,7 @@ class LocalLLMSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Process images now')
-			.setDesc(`Read text from new or changed images now. ${this.plugin.agentRuntime ? `${this.plugin.agentRuntime.imageCache.count} images done so far.` : ''}`)
+			.setDesc(`Read text from new or changed images now, and try again on images where none was found. ${this.plugin.agentRuntime ? `Text found in ${this.plugin.agentRuntime.imageCache.withTextCount} of ${this.plugin.agentRuntime.imageCache.count} images read so far.` : ''}`)
 			.addButton(button => button
 				.setButtonText('Process images')
 				.setCta()
