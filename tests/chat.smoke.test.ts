@@ -67,6 +67,23 @@ async function flushRenderTicks(iterations: number = 2): Promise<void> {
 }
 
 describe('Obsidian chat smoke test', () => {
+  it('opens at once with a placeholder while the server check is still running', async () => {
+    let answer: (result: { success: boolean }) => void = () => undefined;
+    llmMock.testConnection.mockReturnValue(new Promise((resolve) => { answer = resolve; }));
+
+    const view = new ChatView(new WorkspaceLeaf(createAppStub()) as any, createPluginStub() as any);
+    // Resolves although the server has not answered: Obsidian's startup waits on this.
+    await view.onOpen();
+    const text = () => view.containerEl.querySelector('.local-llm-message-content')?.textContent ?? '';
+    expect(text()).toContain('Checking your local AI server');
+    expect(view.containerEl.querySelector('textarea.local-llm-input')).not.toBeNull();
+
+    answer({ success: false });
+    await view.welcomeReady;
+    expect(text()).toContain('Welcome to Private AI');
+    expect(view.containerEl.querySelectorAll('[data-message-id="welcome"]').length).toBe(1);
+  });
+
   beforeEach(() => {
     llmMock.testConnection.mockReset();
     agentMock.send.mockReset();
@@ -80,6 +97,8 @@ describe('Obsidian chat smoke test', () => {
     const view = new ChatView(leaf as any, createPluginStub() as any);
 
     await view.onOpen();
+    // onOpen does not wait for the server check; the greeting arrives right after.
+    await view.welcomeReady;
 
     const content = view.containerEl.children[1].textContent ?? '';
     expect(content).not.toContain('Private AI chat');

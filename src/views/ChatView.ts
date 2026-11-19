@@ -60,6 +60,8 @@ interface ObsidianApp {
 }
 
 const WELCOME_GREETING = `What's on your mind?`;
+/** Shown while the local server is being checked, so opening the pane never waits on the network. */
+const WELCOME_CHECKING = 'Checking your local AI server…';
 
 export class ChatView extends ItemView {
 	private messages: ChatMessage[] = [];
@@ -189,13 +191,9 @@ export class ChatView extends ItemView {
 			this.stopStreaming();
 		});
 
-		// Add initial welcome message
-		await this.addMessage({
-			id: 'welcome',
-			role: 'assistant',
-			content: await ChatView.getWelcomeMessage(this.llmService),
-			timestamp: new Date()
-		});
+		// Obsidian waits for onOpen while it loads the workspace, so the server check must not
+		// be awaited here: a slow or hung server would hold up the whole app.
+		await this.showWelcome();
 
 		if (typeof this.plugin.consumePendingReviewPrompt === 'function') {
 			this.plugin.consumePendingReviewPrompt(this);
@@ -972,11 +970,8 @@ export class ChatView extends ItemView {
 						const connected = welcomeText === WELCOME_GREETING;
 						const welcomeMessage = this.messages.find(m => m.id === 'welcome');
 						if (welcomeMessage && welcomeMessage.content !== welcomeText) {
-							welcomeMessage.content = welcomeText;
-							this.messageContainer.empty();
-							for (const msg of this.messages) {
-								await this.renderMessage(msg);
-							}
+							this.welcomeCheck++;
+							await this.replaceWelcome(welcomeText);
 						} else if (!connected) {
 							refreshButton.textContent = '🔄 Test connection';
 							refreshButton.disabled = false;
@@ -1147,12 +1142,7 @@ export class ChatView extends ItemView {
 
 		// Add new welcome message, checking the server the settings point at now
 		this.updateLLMServiceFromSettings();
-		await this.addMessage({
-			id: 'welcome',
-			role: 'assistant',
-			content: await ChatView.getWelcomeMessage(this.llmService),
-			timestamp: new Date()
-		});
+		await this.showWelcome();
 
 		// Clear input field
 		this.inputElement.value = '';
@@ -1175,6 +1165,40 @@ export class ChatView extends ItemView {
 		navigator.clipboard.writeText(conversationText).then(() => {
 			new Notice('✅ Conversation copied to clipboard!', 2000);
 		});
+	}
+
+	/** Resolves when the welcome message reflects the server check. For tests; nothing in the UI waits on it. */
+	welcomeReady: Promise<void> = Promise.resolve();
+	private welcomeCheck = 0;
+
+	/** Shows a placeholder first message at once, then fills it in when the server has been checked. */
+	private async showWelcome(): Promise<void> {
+		const check = ++this.welcomeCheck;
+		await this.addMessage({ id: 'welcome', role: 'assistant', content: WELCOME_CHECKING, timestamp: new Date() });
+		this.welcomeReady = (async () => {
+			let text: string;
+			try {
+				text = await ChatView.getWelcomeMessage(this.llmService);
+			} catch (error) {
+				LoggingUtility.warn('Could not build the welcome message:', error);
+				text = setupInstructions();
+			}
+			// A newer chat or check has replaced this one.
+			if (check !== this.welcomeCheck) return;
+			await this.replaceWelcome(text);
+		})();
+	}
+
+	/** Swaps the welcome message's text in place, leaving any later messages where they are. */
+	private async replaceWelcome(text: string): Promise<void> {
+		const message = this.messages.find(m => m.id === 'welcome');
+		if (!message || message.content === text) return;
+		message.content = text;
+		const previous = this.messageContainer.querySelector('[data-message-id="welcome"]');
+		await this.renderMessage(message);
+		const rendered = this.messageContainer.querySelectorAll('[data-message-id="welcome"]');
+		const fresh = rendered[rendered.length - 1];
+		if (previous && fresh && previous !== fresh) previous.replaceWith(fresh);
 	}
 
 	/**

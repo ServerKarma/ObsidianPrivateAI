@@ -140,6 +140,22 @@ export type ServerStatus =
 	| { state: 'unknown' }
 	| { state: 'ready'; model: ChatModelInfo };
 
+/** How long the server gets to answer a status check before it counts as not responding. */
+const STATUS_TIMEOUT_MS = 4000;
+
+class StatusTimeout extends Error {}
+
+/** requestUrl can't be cancelled, so a server that accepts the connection but never answers is raced against a timer. */
+function withTimeout<T>(request: Promise<T>, ms: number): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const timer = setTimeout(() => reject(new StatusTimeout(`No answer within ${ms} ms`)), ms);
+		request.then(
+			(value) => { clearTimeout(timer); resolve(value); },
+			(error) => { clearTimeout(timer); reject(error); },
+		);
+	});
+}
+
 const isChatModel = (m: ListedModel): boolean => m.type !== 'embedding' && !m.id.toLowerCase().includes('embed');
 
 /**
@@ -439,7 +455,7 @@ export class LLMService {
 		for (const endpoint of this.getModelListEndpoints()) {
 			try {
 				LoggingUtility.log('Fetching models from:', endpoint);
-				const response = await requestUrl({ url: endpoint, method: 'GET', headers, throw: false });
+				const response = await withTimeout(requestUrl({ url: endpoint, method: 'GET', headers, throw: false }), STATUS_TIMEOUT_MS);
 				reached = true;
 				if (response.status >= 400) {
 					LoggingUtility.warn(`Failed to fetch models from ${endpoint}: ${response.status}`);
@@ -454,6 +470,8 @@ export class LLMService {
 				// An HTTP error still means a server is there; a network error means it isn't.
 				if (typeof (error as { status?: unknown })?.status === 'number') reached = true;
 				LoggingUtility.warn(`Failed to fetch models from ${endpoint}:`, error);
+				// A server that doesn't answer won't answer the next address either; don't wait twice.
+				if (error instanceof StatusTimeout) break;
 			}
 		}
 

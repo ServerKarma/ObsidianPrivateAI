@@ -75,6 +75,76 @@ describe("Private AI when the server or model can't be used", function () {
         });
     });
 
+    describe("the server accepts connections but never answers", function () {
+        let hung: net.Server;
+        let endpoint = "";
+        const sockets = new Set<net.Socket>();
+
+        before(async function () {
+            hung = net.createServer((socket) => {
+                sockets.add(socket);
+                socket.on("error", () => undefined);
+                socket.on("close", () => sockets.delete(socket));
+            });
+            await new Promise<void>((resolve) => hung.listen(0, "127.0.0.1", () => resolve()));
+            endpoint = `http://127.0.0.1:${(hung.address() as net.AddressInfo).port}/v1/chat/completions`;
+        });
+
+        after(async function () {
+            for (const socket of sockets) socket.destroy();
+            await new Promise<void>((resolve) => hung.close(() => resolve()));
+        });
+
+        it("opens the chat pane at once and keeps Obsidian usable while it waits", async function () {
+            await browser.executeObsidian(async ({ app }, url) => {
+                const plugins = (app as any).plugins;
+                const plugin = plugins.plugins["private-ai"];
+                Object.assign(plugin.settings, { apiEndpoint: url, model: "" });
+                await plugin.saveSettings();
+                // Restart the plugin so the pane opens against the hung server, as it would on app start.
+                await plugins.disablePlugin("private-ai");
+                await plugins.enablePlugin("private-ai");
+            }, endpoint);
+
+            const started = Date.now();
+            await browser.executeObsidianCommand("private-ai:open-local-llm-chat");
+            const input = browser.$('[data-type="local-llm-chat-view"] textarea.local-llm-input');
+            await input.waitForExist({ timeout: 3000 });
+            const firstMessage = await browser.execute(() =>
+                (document.querySelector('[data-type="local-llm-chat-view"] .local-llm-message-content')?.textContent ?? "").trim());
+            // The pane is there well before the server check could have timed out.
+            expect(Date.now() - started).toBeLessThan(3000);
+            expect(firstMessage).toContain("Checking your local AI server");
+
+            // Obsidian still does other work while the check is pending.
+            const opened = await browser.executeObsidian(async ({ app }) => {
+                const file = app.vault.getFileByPath("Home/Dishwasher Repair.md");
+                await app.workspace.getLeaf("tab").openFile(file!);
+                return app.workspace.getActiveFile()?.path;
+            });
+            expect(opened).toBe("Home/Dishwasher Repair.md");
+            await input.setValue("still typing");
+            expect(await input.getValue()).toBe("still typing");
+            await input.setValue("");
+            expect(await errorDialogText()).toBe("");
+        });
+
+        it("gives up after a few seconds and shows the setup instructions", async function () {
+            await browser.waitUntil(async () => (await browser.execute(() =>
+                document.querySelector('[data-type="local-llm-chat-view"] .local-llm-message-content')?.textContent ?? "")).includes("Welcome to Private AI"), {
+                timeout: 15000,
+                timeoutMsg: "the placeholder was never replaced",
+            });
+        });
+
+        it("answers a message within a few seconds instead of hanging", async function () {
+            const started = Date.now();
+            const reply = await askAndWait("Hello", 15000);
+            expect(reply).toContain("Can't reach LM Studio");
+            expect(Date.now() - started).toBeLessThan(12000);
+        });
+    });
+
     describe("LM Studio is running but no model is downloaded", function () {
         let server: FakeLmStudio;
 
