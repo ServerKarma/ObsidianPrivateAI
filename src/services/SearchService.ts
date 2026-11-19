@@ -1,6 +1,6 @@
 import { App, TFile, CachedMetadata, getAllTags, MarkdownView } from 'obsidian';
 import { LoggingUtility } from '../utils/LoggingUtility';
-import { RAGService, RAGSearchResult } from './RAGService';
+import { VaultSearch } from '../agent/search/VaultSearch';
 
 export interface SearchResult {
 	file: TFile;
@@ -18,54 +18,48 @@ export interface SearchOptions {
 
 export class SearchService {
 	private app: App;
-	private ragService: RAGService | null = null;
+	private vaultSearch: VaultSearch | null = null;
 
-	constructor(app: App, ragService?: RAGService) {
+	constructor(app: App, vaultSearch?: VaultSearch) {
 		this.app = app;
-		this.ragService = ragService || null;
+		this.vaultSearch = vaultSearch || null;
+	}
+
+	setVaultSearch(vaultSearch: VaultSearch): void {
+		this.vaultSearch = vaultSearch;
 	}
 
 	/**
-	 * Set the RAG service instance
-	 */
-	setRAGService(ragService: RAGService): void {
-		this.ragService = ragService;
-	}
-
-	/**
-	 * Search for relevant notes using RAG (fallback to keyword search if RAG unavailable)
+	 * Search for relevant notes with the BM25 index (falls back to a simple keyword scan)
 	 */
 	async searchVault(query: string, options: SearchOptions = {}): Promise<SearchResult[]> {
 		LoggingUtility.log('Searching vault for:', query);
-		LoggingUtility.log('Search options:', options);
 
-		// Try RAG search first
-		if (this.ragService && !this.ragService.isIndexEmpty()) {
+		if (this.vaultSearch) {
 			try {
-				const ragResults = await this.ragService.search(
-					query,
-					options.maxResults || 5,
-					options.threshold || 0.3
-				);
-
-				// Convert RAG results to SearchResult format
-				const searchResults = ragResults.map(result => ({
-					file: result.file,
-					content: result.content,
-					relevance: result.similarity,
-					title: result.title,
-					path: result.path
-				}));
-
-				LoggingUtility.log(`RAG search completed. Found ${searchResults.length} relevant notes.`);
-				return searchResults;
+				const hits = await this.vaultSearch.search(query, options.maxResults || 5);
+				const top = hits[0]?.score || 1;
+				const maxChars = (options.maxTokens || 2000) * 4;
+				const perNote = Math.max(500, Math.floor(maxChars / Math.max(1, hits.length)));
+				const results: SearchResult[] = [];
+				for (const hit of hits) {
+					const file = this.app.vault.getAbstractFileByPath(hit.path);
+					if (!(file instanceof TFile) || file.extension !== 'md') continue;
+					const content = await this.app.vault.cachedRead(file);
+					results.push({
+						file,
+						content: this.extractRelevantContent(content, query, Math.floor(perNote / 4)),
+						relevance: hit.score / top,
+						title: this.getFileTitle(file, this.app.metadataCache.getFileCache(file)),
+						path: file.path
+					});
+				}
+				return results;
 			} catch (error) {
-				LoggingUtility.warn('RAG search failed, falling back to keyword search:', error);
+				LoggingUtility.warn('BM25 search failed, falling back to keyword scan:', error);
 			}
 		}
 
-		// Fallback to keyword search if RAG is unavailable
-		LoggingUtility.log('Using keyword search fallback');
 		return await this.keywordSearchVault(query, options);
 	}
 

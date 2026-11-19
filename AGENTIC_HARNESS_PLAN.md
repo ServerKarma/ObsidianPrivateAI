@@ -1,5 +1,7 @@
 # Agentic Harness Implementation Plan
 
+> **Status (2026-11-19): implemented on the Pi harness.** The agent loop is the open-source Pi harness (`@mariozechner/pi-agent-core` + `@mariozechner/pi-ai`) instead of the hand-written `AgentHarness`/`OpenAIChatClient` sketched below, and the vault tools are published by an MCP server built into the plugin (`src/agent/mcp/`), which the Pi agent reaches in-process through an MCP→Pi tool bridge (`src/agent/pi/mcpTools.ts`). The SQLite/embedding RAG stack is gone; retrieval is BM25 + grep (`src/agent/search/`), with image OCR text cached in `image-text-cache.json`. Mapping to the phases: 1 → `src/agent/vault/VaultPort.ts` + `tests/agent/purity.test.ts`; 2 → `src/agent/tools/`, `src/agent/search/`; 3 → `src/agent/pi/PiChatAgent.ts`; 4/6 → `e2e/specs/agent.e2e.ts` (offline evals; live LM Studio evals and the full eval case list are still to do); 5 → `ChatView` + settings; 7 → done (vector store removed). The rest of this document is the original plan, kept for the eval case list.
+
 **Goal:** Turn Private AI from a single-shot RAG chat into an agentic assistant. The LM Studio-hosted model gets tools (search notes, read, create, edit, move/rename, delete) and runs a multi-turn tool-use loop to answer queries like *"when did I replace the water heater?"* by finding and reading the right notes itself — and to perform vault CRUD on request.
 
 **Testing goal:** Manual testing in Obsidian is deprecated for everything except UI look-and-feel. Two layers:

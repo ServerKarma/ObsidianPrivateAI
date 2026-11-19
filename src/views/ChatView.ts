@@ -1,5 +1,7 @@
 import { ItemView, WorkspaceLeaf, MarkdownRenderer, Notice, DropdownComponent, setIcon } from 'obsidian';
-import { LLMService, createLLMService, ChatMessage as LLMChatMessage, StreamCallback } from '../services/LLMService';
+import { LLMService, createLLMService } from '../services/LLMService';
+import { PiChatAgent, ChatAgentEvent } from '../agent/pi/PiChatAgent';
+import { describeToolCall, summarizeToolResult } from '../agent/pi/toolActivity';
 import { SearchService, SearchResult } from '../services/SearchService';
 import { LoggingUtility } from '../utils/LoggingUtility';
 import LocalLLMPlugin, { ContextMode } from '../main';
@@ -70,6 +72,7 @@ export class ChatView extends ItemView {
 	private ragStatusContent: HTMLElement;
 	private llmService: LLMService;
 	private searchService: SearchService;
+	private chatAgent: PiChatAgent;
 	private isStreaming: boolean = false;
 	private currentAbortController: AbortController | null = null;
 	private contextMode: ContextMode = ContextMode.OPEN_NOTES;
@@ -82,8 +85,9 @@ export class ChatView extends ItemView {
 	constructor(leaf: WorkspaceLeaf, plugin: LocalLLMPlugin) {
 		super(leaf);
 		this.plugin = plugin;
-		// Pass RAG service to SearchService for enhanced search capabilities
-		this.searchService = new SearchService(this.app, plugin.ragService);
+		this.searchService = new SearchService(this.app, plugin.agentRuntime?.search);
+		// The Pi agent; it reaches the vault through the plugin's built-in MCP server.
+		this.chatAgent = plugin.createChatAgent();
 		// Initialize with plugin settings
 		this.updateLLMServiceFromSettings();
 		// Initialize context mode from plugin settings
@@ -143,8 +147,8 @@ export class ChatView extends ItemView {
 				// Save the context mode to plugin settings
 				this.plugin.settings.contextMode = this.contextMode;
 				await this.plugin.saveSettings();
-				// Update RAG status display
-				this.updateRAGStatus();
+				// Update the status line
+				this.updateStatusArea();
 			});
 
 		// Set initial value based on plugin settings
@@ -208,7 +212,7 @@ export class ChatView extends ItemView {
 			cls: 'local-llm-stop-button'
 		});
 
-		// Create RAG status area below input container
+		// Status area below the input (search scope, image progress)
 		this.ragStatusArea = chatContainer.createEl('div', {
 			cls: 'local-llm-rag-status-area local-llm-rag-status-hidden'
 		});
@@ -241,8 +245,8 @@ export class ChatView extends ItemView {
 			timestamp: new Date()
 		});
 
-		// Check and display initial RAG status
-		this.updateRAGStatus();
+		// Show the initial status line
+		this.updateStatusArea();
 		if (typeof this.plugin.consumePendingReviewPrompt === 'function') {
 			this.plugin.consumePendingReviewPrompt(this);
 		}
@@ -276,8 +280,8 @@ export class ChatView extends ItemView {
 		if (dropdown) {
 			dropdown.value = this.contextMode;
 		}
-		// Update RAG status display
-		this.updateRAGStatus();
+		// Update the status line
+		this.updateStatusArea();
 	}
 
 	updateLLMService(config: LLMConfig) {
@@ -365,116 +369,126 @@ export class ChatView extends ItemView {
 		this.showStopButton(true);
 		this.isStreaming = true;
 
-		// Get context based on dropdown selection
-		let searchContext = '';
-		let searchResults: SearchResult[] = [];
-
-		let contextMode: ContextMode = this.contextMode;
-		this.showSearchIndicator(true);
-		try {
-			if (contextMode === ContextMode.OPEN_NOTES) {
-				// Use open tabs as context
-				const openTabs = await this.searchService.getCurrentNoteContext();
-				if (openTabs.length > 0) {
-					searchResults = openTabs;
-					searchContext = this.searchService.formatSearchResults(searchResults);
-					LoggingUtility.log(`Using ${openTabs.length} open tabs as context`);
-				} else {
-					LoggingUtility.log('No open tabs found, no context will be used');
-				}
-			} else if (contextMode === ContextMode.SEARCH) {
-				// Search entire vault using RAG (with keyword fallback)
-				const maxContextTokens = Math.floor(this.plugin.settings.maxTokens * (this.plugin.settings.searchContextPercentage / 100));
-				searchResults = await this.searchService.searchVault(content, {
-					maxResults: this.plugin.settings.ragMaxResults,
-					maxTokens: maxContextTokens,
-					threshold: this.plugin.settings.ragThreshold
-				});
-
-				if (searchResults.length > 0) {
-					searchContext = this.searchService.formatSearchResults(searchResults);
-					LoggingUtility.log(`Found ${searchResults.length} relevant notes using enhanced search`);
-				}
-			} else if (contextMode === ContextMode.NONE) {
-				// No context - just use the user's message as-is
-				LoggingUtility.log('No context mode selected - using message without additional context');
+		// Context mode decides what the agent starts with:
+		// Open tabs = open notes up front + vault tools, All notes = vault tools, None = plain chat.
+		const contextMode: ContextMode = this.contextMode;
+		const useTools = contextMode !== ContextMode.NONE;
+		let openNotes: SearchResult[] = [];
+		if (contextMode === ContextMode.OPEN_NOTES) {
+			this.showSearchIndicator(true);
+			try {
+				openNotes = await this.searchService.getCurrentNoteContext();
+				LoggingUtility.log(`Using ${openNotes.length} open tabs as context`);
+			} catch (contextError) {
+				LoggingUtility.error('Error getting open notes:', contextError);
+			} finally {
+				this.showSearchIndicator(false);
 			}
-		} catch (searchError) {
-			LoggingUtility.error('Error getting context:', searchError);
-			// Continue without search context if search fails
-		} finally {
-			this.showSearchIndicator(false);
 		}
 
-		// Create streaming assistant message
 		const assistantMessage: ChatMessage = {
 			id: 'streaming-' + Date.now(),
 			role: 'assistant',
 			content: '',
 			timestamp: new Date(),
 			isStreaming: true,
-			usedNotes: searchResults.length > 0 ? searchResults : undefined
+			usedNotes: openNotes.length > 0 ? openNotes : undefined
 		};
-
 		await this.addMessage(assistantMessage);
 
-		try {
-			// Convert chat history to LLM format
-			const conversationHistory: LLMChatMessage[] = this.messages
-				.filter(m => !m.isStreaming && m.id !== 'welcome')
-				.map(m => ({
-					role: m.role,
-					content: m.content
-				}));
-
-
-
-			// Add search context to the user message if available
-			let enhancedContent = content;
-			if (searchContext) {
-				enhancedContent = `Context from your Obsidian vault:\n${searchContext}\n\nUser question: ${content}`;
+		// Agent events arrive faster than rendering; apply them strictly in order.
+		let renderChain: Promise<void> = Promise.resolve();
+		const push = (chunk: string) => {
+			renderChain = renderChain
+				.then(() => this.updateStreamingMessage(assistantMessage.id, chunk))
+				.catch((renderError) => LoggingUtility.error('Error rendering streamed chunk:', renderError));
+		};
+		let inThinking = false;
+		const openThinking = () => {
+			if (!inThinking) {
+				push('<think>');
+				inThinking = true;
 			}
-
-			// Create streaming callback
-			const streamCallback: StreamCallback = async (chunk: string, isComplete: boolean) => {
-				if (isComplete) {
-					// Finalize the message
-					await this.finalizeStreamingMessage(assistantMessage.id);
-					this.isStreaming = false;
-					this.setSendButtonEnabled(true);
-					this.showStopButton(false);
-					this.currentAbortController = null;
-				} else {
-					// Update the streaming message
-					await this.updateStreamingMessage(assistantMessage.id, chunk);
+		};
+		const closeThinking = () => {
+			if (inThinking) {
+				push('</think>');
+				inThinking = false;
+			}
+		};
+		const notesRead = new Map<string, SearchResult>();
+		const onEvent = (event: ChatAgentEvent) => {
+			// A rendering problem must never break the agent run.
+			try {
+				switch (event.type) {
+					case 'thinking':
+						openThinking();
+						push(event.delta);
+						break;
+					case 'tool_start':
+						// Tool activity shows in the collapsible thinking panel, not in the answer.
+						openThinking();
+						push(`\n🔧 ${describeToolCall(event.name, event.args)}\n`);
+						if (event.name === 'read_note') this.trackReadNote(event.args, notesRead);
+						break;
+					case 'tool_end':
+						openThinking();
+						push(`${event.isError ? '⚠️' : '↳'} ${summarizeToolResult(event.name, event.resultText, event.isError)}\n`);
+						break;
+					case 'text':
+						closeThinking();
+						push(event.delta);
+						break;
 				}
-			};
+			} catch (renderError) {
+				LoggingUtility.error('Error rendering agent event:', renderError);
+			}
+		};
 
-			// Call streaming LLM API with abort signal
-			await this.llmService.sendMessageStream(enhancedContent, conversationHistory, streamCallback, this.currentAbortController.signal);
+		const finish = () => {
+			this.isStreaming = false;
+			this.setSendButtonEnabled(true);
+			this.showStopButton(false);
+			this.currentAbortController = null;
+		};
 
+		try {
+			await this.chatAgent.send(content, onEvent, this.currentAbortController.signal, {
+				context: openNotes.length > 0 ? this.searchService.formatSearchResults(openNotes) : undefined,
+				useTools
+			});
+			closeThinking();
+			await renderChain;
+			const used = [...openNotes, ...[...notesRead.values()].filter(n => !openNotes.some(o => o.path === n.path))];
+			assistantMessage.usedNotes = used.length > 0 ? used : undefined;
+			await this.finalizeStreamingMessage(assistantMessage.id);
+			finish();
 		} catch (error) {
-			// Handle error
-			if (error.name === 'AbortError') {
-				// User cancelled - don't change the message content
-				this.isStreaming = false;
-				this.setSendButtonEnabled(true);
-				this.showStopButton(false);
-				this.currentAbortController = null;
-
-				// Finalize the current streaming message as-is
+			closeThinking();
+			await renderChain;
+			finish();
+			if (error?.name === 'AbortError') {
 				const streamingMessage = this.messages.find(m => m.isStreaming);
 				if (streamingMessage) {
 					streamingMessage.isStreaming = false;
-					this.finalizeStreamingMessage(streamingMessage.id);
+					await this.finalizeStreamingMessage(streamingMessage.id);
 				}
 			} else {
-				// Handle actual errors
 				this.handleStreamingError(assistantMessage.id, error);
-				this.isStreaming = false;
-				this.setSendButtonEnabled(true);
-				this.showStopButton(false);
-				this.currentAbortController = null;
+			}
+		}
+	}
+
+	private trackReadNote(args: unknown, notesRead: Map<string, SearchResult>): void {
+		const raw = (args as { path?: unknown } | undefined)?.path;
+		if (typeof raw !== 'string') return;
+		const candidates = [raw, raw.endsWith('.md') ? raw : `${raw}.md`];
+		for (const path of candidates) {
+			const file = this.app.vault.getAbstractFileByPath(path);
+			if (file && 'extension' in file) {
+				const tfile = file as SearchResult['file'];
+				notesRead.set(tfile.path, { file: tfile, content: '', relevance: 1, title: tfile.basename, path: tfile.path });
+				return;
 			}
 		}
 	}
@@ -1224,7 +1238,8 @@ export class ChatView extends ItemView {
 			this.stopStreaming();
 		}
 
-		// Clear all messages
+		// Clear all messages and the agent's conversation
+		this.chatAgent.reset();
 		this.messages = [];
 		this.messageContainer.empty();
 		this.streamingThinkingState.clear();
@@ -1298,127 +1313,58 @@ Once your server is running, click the test connection button below.`;
 	}
 
 	/**
-	 * Update the RAG status area based on current state
+	 * Status line under the input: what the agent can search, or image-processing progress.
 	 */
-	private updateRAGStatus(): void {
-		// Check if currently indexing
-		if (this.plugin.ragService && this.plugin.ragService.isCurrentlyIndexing) {
-			// Will be updated by progress callbacks, don't show stats
+	private updateStatusArea(): void {
+		if (this.indexingInProgress) return;
+		if (this.contextMode === ContextMode.SEARCH && this.plugin.agentRuntime) {
+			const noteCount = this.plugin.agentRuntime.search.notes().length;
+			const imageCount = this.plugin.agentRuntime.imageCache.count;
+			this.ragStatusContent.empty();
+			const statsEl = this.ragStatusContent.createEl('div', { cls: 'local-llm-rag-stats' });
+			statsEl.createEl('span', { cls: 'local-llm-rag-stats-icon', text: '🔎' });
+			statsEl.createEl('span', {
+				cls: 'local-llm-rag-stats-text',
+				text: `The agent searches ${noteCount.toLocaleString()} notes${imageCount > 0 ? ` and text from ${imageCount.toLocaleString()} images` : ''} with BM25 and grep`
+			});
+			this.ragStatusArea.removeClass('local-llm-rag-status-hidden');
+			this.ragStatusArea.addClass('local-llm-rag-status-visible');
+		} else {
+			this.hideStatusArea();
+		}
+	}
+
+	private indexingInProgress = false;
+
+	/**
+	 * Show image text extraction progress
+	 */
+	showIndexProgress(current: number, total: number, message: string): void {
+		this.indexingInProgress = current < total;
+		if (!this.indexingInProgress) {
+			this.updateStatusArea();
 			return;
 		}
-
-		// Show database stats if context mode is "All Notes"
-		if (this.contextMode === ContextMode.SEARCH) {
-			const stats = this.plugin.ragService.getStats();
-			this.showRAGStats(stats.documentCount, stats.fileCount);
-		} else {
-			this.hideRAGStatus();
-		}
-	}
-
-	/**
-	 * Show RAG database statistics
-	 */
-	private showRAGStats(documentCount: number, fileCount: number): void {
-		this.ragStatusContent.empty();
-		const statsEl = this.ragStatusContent.createEl('div', { cls: 'local-llm-rag-stats' });
-		statsEl.createEl('span', { cls: 'local-llm-rag-stats-icon', text: '📚' });
-		statsEl.createEl('span', {
-			cls: 'local-llm-rag-stats-text',
-			text: `RAG Database: ${documentCount.toLocaleString()} paragraphs from ${fileCount.toLocaleString()} files available for context`
-		});
-
-		this.ragStatusArea.removeClass('local-llm-rag-status-paused');
-		this.ragStatusArea.removeClass('local-llm-rag-status-hidden');
-		this.ragStatusArea.addClass('local-llm-rag-status-visible');
-	}
-
-	/**
-	 * Show RAG indexing progress
-	 */
-	showRAGProgress(current: number, total: number, message: string): void {
 		const percentage = total > 0 ? Math.round((current / total) * 100) : 0;
-		const isPaused = this.plugin.ragService.isIndexingPaused || message.toLowerCase().includes('indexing paused');
-		const pauseMessage = this.plugin.ragService.pauseMessage;
-		const resolvedMessage = isPaused && pauseMessage ? pauseMessage : message;
-		const progressMessage = total > 0 && !isPaused ? `${resolvedMessage} (${current}/${total})` : resolvedMessage;
-		const pauseCategory = this.plugin.ragService.pauseCategoryType;
-		const pauseLabel = pauseCategory === 'vision'
-			? 'Paused (Vision)'
-			: pauseCategory === 'embedding'
-				? 'Paused (Embeddings)'
-				: pauseCategory === 'connection'
-					? 'Paused (Connection)'
-					: 'Paused';
-
 		this.ragStatusContent.empty();
-		// Secure DOM manipulation used here (createEl instead of innerHTML) to prevent XSS
+		// createEl (not innerHTML) so file names can't inject markup
 		const progressContainer = this.ragStatusContent.createEl('div', { cls: 'local-llm-rag-progress' });
-
 		const headerEl = progressContainer.createEl('div', { cls: 'local-llm-rag-progress-header' });
 		headerEl.createEl('span', { cls: 'local-llm-rag-progress-icon', text: '⚡' });
-		headerEl.createEl('span', { cls: 'local-llm-rag-progress-text', text: 'Indexing Notes' });
-		if (isPaused) {
-			headerEl.createEl('span', { cls: 'local-llm-rag-paused-pill', text: pauseLabel });
-		}
-
+		headerEl.createEl('span', { cls: 'local-llm-rag-progress-text', text: 'Reading text from images' });
 		const detailsEl = progressContainer.createEl('div', { cls: 'local-llm-rag-progress-details' });
-		detailsEl.createEl('div', { cls: 'local-llm-rag-progress-message', text: progressMessage });
-
+		detailsEl.createEl('div', { cls: 'local-llm-rag-progress-message', text: `${message} (${current}/${total})` });
 		const barContainer = detailsEl.createEl('div', { cls: 'local-llm-rag-progress-bar-container' });
-		barContainer.createEl('div', {
-			cls: 'local-llm-rag-progress-bar',
-			attr: { style: `width: ${percentage}%` }
-		});
-
+		barContainer.createEl('div', { cls: 'local-llm-rag-progress-bar', attr: { style: `width: ${percentage}%` } });
 		const footerEl = detailsEl.createEl('div', { cls: 'local-llm-rag-progress-footer' });
 		footerEl.createEl('div', { cls: 'local-llm-rag-progress-percentage', text: `${percentage}%` });
-		if (isPaused) {
-			footerEl.createEl('button', {
-				cls: 'mod-cta local-llm-rag-retry-button',
-				text: 'Retry Indexing',
-				attr: { type: 'button' }
-			});
-		}
-
-		if (isPaused) {
-			this.ragStatusArea.addClass('local-llm-rag-status-paused');
-		} else {
-			this.ragStatusArea.removeClass('local-llm-rag-status-paused');
-		}
 		this.ragStatusArea.removeClass('local-llm-rag-status-hidden');
 		this.ragStatusArea.addClass('local-llm-rag-status-visible');
-
-		if (isPaused) {
-			const retryButton = this.ragStatusContent.querySelector('.local-llm-rag-retry-button') as HTMLButtonElement | null;
-			retryButton?.addEventListener('click', () => {
-				const resumed = this.plugin.ragService.retryPausedIndexing();
-				if (resumed) {
-					retryButton.disabled = true;
-					retryButton.textContent = 'Retrying...';
-				} else {
-					new Notice('Indexing is not currently paused.');
-				}
-			});
-		}
 	}
 
-	/**
-	 * Hide RAG status area
-	 */
-	private hideRAGStatus(): void {
+	private hideStatusArea(): void {
 		this.ragStatusArea.removeClass('local-llm-rag-status-paused');
 		this.ragStatusArea.removeClass('local-llm-rag-status-visible');
 		this.ragStatusArea.addClass('local-llm-rag-status-hidden');
 	}
-
-	/**
-	 * Called when RAG indexing completes
-	 */
-	onRAGIndexingComplete(): void {
-		// Update stats display after a brief delay
-		setTimeout(() => {
-			this.updateRAGStatus();
-		}, 1000);
-	}
-} 
+}

@@ -182,3 +182,6 @@ vector-index/image-embeddings.json
 **/image-embeddings.json
 vector-index
 .obsidian-cache/
+
+# Agent image OCR cache (plugin data)
+image-text-cache.json

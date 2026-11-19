@@ -85,16 +85,6 @@ export interface ChatResponse {
 	};
 }
 
-export interface StreamChunk {
-	choices: Array<{
-		delta: {
-			content?: string;
-			role?: string;
-		};
-		finish_reason?: string;
-	}>;
-}
-
 export interface ModelData {
 	id: string;
 	object: string;
@@ -117,8 +107,6 @@ export interface LMStudioRestModel {
 export interface LMStudioRestModelsResponse {
 	models: LMStudioRestModel[];
 }
-
-export type StreamCallback = (chunk: string, isComplete: boolean) => void;
 
 export class LLMService {
 	private config: LLMConfig;
@@ -228,44 +216,6 @@ export class LLMService {
 		}
 	}
 
-	async sendMessageStream(message: string, conversationHistory: ChatMessage[] = [], callback: StreamCallback, abortSignal?: AbortSignal): Promise<void> {
-		try {
-			const messages: ChatMessage[] = [];
-
-			// Add system prompt if configured
-			if (this.config.systemPrompt && this.config.systemPrompt.trim()) {
-				messages.push({ role: 'system', content: this.config.systemPrompt });
-			}
-
-			// Add conversation history and current message
-			messages.push(...conversationHistory, { role: 'user', content: message });
-
-			const request: ChatRequest = {
-				messages,
-				max_tokens: this.config.maxTokens || 1000,
-				temperature: this.config.temperature || 0.7,
-				stream: true
-			};
-
-			// Add model to request if specified
-			if (this.config.model) {
-				request.model = this.config.model;
-			}
-
-			LoggingUtility.log('Sending streaming request to:', this.config.apiEndpoint);
-			LoggingUtility.log('Request payload:', JSON.stringify(request, null, 2));
-
-			await this.makeStreamingAPIRequest(request, callback, abortSignal);
-		} catch (error) {
-			if (error.name === 'AbortError') {
-				LoggingUtility.log('Request was cancelled by user');
-				return;
-			}
-			LoggingUtility.error('Error sending streaming message to LLM:', error);
-			throw error;
-		}
-	}
-
 	private async makeAPIRequest(request: ChatRequest): Promise<ChatResponse> {
 		const headers = this.buildHeaders();
 
@@ -298,130 +248,6 @@ export class LLMService {
 		}
 	}
 
-	private async makeStreamingAPIRequest(request: ChatRequest, callback: StreamCallback, abortSignal?: AbortSignal): Promise<void> {
-		LoggingUtility.log('Making streaming API request to:', this.config.apiEndpoint);
-
-		// Note: requestUrl doesn't support streaming, so we fall back to fetch for streaming requests
-		// This is a known limitation when working with streaming APIs in Obsidian plugins
-		try {
-			// For streaming, we need to use native fetch as Obsidian's requestUrl doesn't support streaming
-			if (!window || !window.fetch) {
-				throw new Error('Streaming is not supported in this environment');
-			}
-
-			const headers = this.buildHeaders();
-
-			const response = await fetch(this.config.apiEndpoint, {
-				method: 'POST',
-				headers,
-				body: JSON.stringify(request),
-				signal: abortSignal || AbortSignal.timeout(60000), // 60 second timeout for streaming
-			});
-
-			LoggingUtility.log('Streaming response status:', response.status);
-
-			if (!response.ok) {
-				const errorText = await response.text();
-				LoggingUtility.error('Streaming API Error Response:', errorText);
-				throw new Error(`Streaming API request failed: ${response.status} ${response.statusText} - ${errorText}`);
-			}
-
-			if (!response.body) {
-				throw new Error('No response body for streaming request');
-			}
-
-			const reader = response.body.getReader();
-			const decoder = new TextDecoder();
-			let buffer = '';
-			let isCompleted = false; // Flag to prevent multiple completion signals
-
-			try {
-				while (true) {
-					const { done, value } = await reader.read();
-
-					if (done) {
-						// Process any remaining buffer
-						if (buffer.trim() && !isCompleted) {
-							this.processStreamChunk(buffer, callback);
-						}
-						if (!isCompleted) {
-							callback('', true); // Signal completion
-							isCompleted = true;
-						}
-						break;
-					}
-
-					// Decode the chunk and add to buffer
-					buffer += decoder.decode(value, { stream: true });
-
-					// Process complete lines
-					const lines = buffer.split('\n');
-					buffer = lines.pop() || ''; // Keep incomplete line in buffer
-
-					for (const line of lines) {
-						if (line.trim() && line.startsWith('data: ')) {
-							const data = line.slice(6); // Remove 'data: ' prefix
-
-							if (data === '[DONE]') {
-								if (!isCompleted) {
-									callback('', true); // Signal completion
-									isCompleted = true;
-								}
-								return;
-							}
-
-							try {
-								const chunk: StreamChunk = JSON.parse(data);
-								this.processStreamChunk(chunk, callback, isCompleted);
-								// Check if completion was signaled by processStreamChunk
-								if (chunk.choices?.some(choice => choice.finish_reason)) {
-									isCompleted = true;
-								}
-							} catch (parseError) {
-								LoggingUtility.warn('Failed to parse streaming chunk:', data, parseError);
-							}
-						}
-					}
-				}
-			} finally {
-				reader.releaseLock();
-			}
-		} catch (error) {
-			LoggingUtility.error('Streaming fetch error details:', error);
-
-			// Handle specific error types
-			if (error.name === 'AbortError') {
-				// Re-throw as AbortError so the caller can detect user cancellation
-				throw error;
-			}
-
-			throw new Error(getLLMErrorMessage(error, this.config.apiEndpoint));
-		}
-	}
-
-	private processStreamChunk(chunk: StreamChunk | string, callback: StreamCallback, isCompleted: boolean = false): void {
-		if (typeof chunk === 'string') {
-			// Handle raw string chunks (fallback)
-			if (chunk.trim() && !isCompleted) {
-				callback(chunk, false);
-			}
-			return;
-		}
-
-		// Handle structured chunks
-		for (const choice of chunk.choices) {
-			if (choice.delta?.content && !isCompleted) {
-				callback(choice.delta.content, false);
-			}
-
-			if (choice.finish_reason && !isCompleted) {
-				callback('', true); // Signal completion
-				return;
-			}
-		}
-	}
-
-	// Helper method to test connection
 	async testConnection(): Promise<{ success: boolean; error?: string }> {
 		try {
 			LoggingUtility.log('Testing connection to:', this.config.apiEndpoint);
@@ -468,6 +294,18 @@ export class LLMService {
 				success: false,
 				error: getLLMErrorMessage(error, this.config.apiEndpoint)
 			};
+		}
+	}
+
+	/** First chat (non-embedding) model the server reports, used when no model is configured. */
+	async getDefaultChatModel(): Promise<string | undefined> {
+		try {
+			const models = await this.fetchAvailableModels();
+			const chat = models.find((m) => m.type !== 'embedding' && !m.id.toLowerCase().includes('embed'));
+			return chat?.id;
+		} catch (error) {
+			LoggingUtility.warn('Could not determine a default chat model:', error);
+			return undefined;
 		}
 	}
 

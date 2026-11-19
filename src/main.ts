@@ -1,7 +1,9 @@
 import { App, Plugin, PluginSettingTab, Setting, WorkspaceLeaf, ItemView, Notice } from 'obsidian';
 import { ChatView } from './views/ChatView';
 import { LoggingUtility } from './utils/LoggingUtility';
-import { RAGService } from './services/RAGService';
+import { AgentRuntime } from './agent/obsidian/AgentRuntime';
+import { PiChatAgent } from './agent/pi/PiChatAgent';
+import { ImageTextExtractor } from './services/ImageTextExtractor';
 import '../styles.css';
 import manifest from '../manifest.json';
 
@@ -13,34 +15,29 @@ export enum ContextMode {
 	NONE = 'none'
 }
 
-interface LocalLLMSettings {
+export interface LocalLLMSettings {
 	apiEndpoint: string;
 	maxTokens: number;
 	temperature: number;
-	// System prompt setting
+	// User preferences appended to the agent's system prompt
 	systemPrompt: string;
-	// Model setting (optional - if not set, no model will be sent in payload)
+	// Model setting (optional - if not set, the first loaded chat model is used)
 	model?: string;
 	// API key (optional) - if specified, used as a Bearer token (works with LM Studio)
 	apiKey?: string;
-	// Search settings
-	searchMaxResults: number;
-	searchContextPercentage: number;
-	searchThreshold: number;
-	// Context mode setting - updated to remove RAG distinction
 	contextMode: ContextMode;
-	// Developer logging setting
 	enableDeveloperLogging: boolean;
-	// RAG settings (RAG is now always enabled)
-	enableRAG: boolean;
-	ragThreshold: number;
-	ragMaxResults: number;
-	// Embedding settings
-	embeddingEndpoint: string;
-	embeddingModel: string;
+	// Agent (Pi harness) settings
+	allowNoteChanges: boolean;
+	maxToolRounds: number;
+	contextWindow: number;
+	// Built-in MCP server, exposed on localhost for other MCP clients
+	mcpServerEnabled: boolean;
+	mcpServerPort: number;
+	mcpServerToken: string;
 	// Image processing settings
 	enableImageTextExtraction: boolean;
-	// Exclusion settings for indexing/task processing
+	// Files the agent can't see
 	excludedFolders: string[];
 	excludedFilePatterns: string[];
 	// Context notes visibility setting
@@ -52,40 +49,40 @@ interface LocalLLMSettings {
 	reviewLinkClicked: boolean;
 }
 
-const DEFAULT_SETTINGS: LocalLLMSettings = {
+/** The pre-agent default prompt; replaced with an empty preference on load. */
+const LEGACY_DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant with access to the user's Obsidian vault. When provided with context from their notes, use that information to provide more accurate and relevant responses. Reference specific notes when appropriate, but focus on answering the user's question clearly and concisely.";
+
+/** Settings from the removed embedding/vector-store pipeline, dropped from data.json on load. */
+const REMOVED_SETTINGS = ['searchMaxResults', 'searchContextPercentage', 'searchThreshold', 'enableRAG', 'ragThreshold', 'ragMaxResults', 'embeddingEndpoint', 'embeddingModel'];
+
+export const DEFAULT_SETTINGS: LocalLLMSettings = {
 	apiEndpoint: 'http://localhost:1234/v1/chat/completions',
 	maxTokens: 10000,
 	temperature: 0.7,
-	// Default system prompt
-	systemPrompt: "You are a helpful assistant with access to the user's Obsidian vault. When provided with context from their notes, use that information to provide more accurate and relevant responses. Reference specific notes when appropriate, but focus on answering the user's question clearly and concisely.",
-	// Search defaults
-	searchMaxResults: 5,
-	searchContextPercentage: 50,
-	searchThreshold: 0.3,
-	// Default context mode (search now uses RAG)
+	systemPrompt: '',
 	contextMode: ContextMode.OPEN_NOTES,
-	// Default developer logging setting
 	enableDeveloperLogging: false,
-	// RAG defaults (always enabled)
-	enableRAG: true,
-	ragThreshold: 0.5,
-	ragMaxResults: 10,
-	// Embedding defaults
-	embeddingEndpoint: 'http://localhost:1234/v1/embeddings',
-	embeddingModel: 'text-embedding-nomic-embed-text-v1.5',
-	// Image processing defaults
+	allowNoteChanges: true,
+	maxToolRounds: 8,
+	contextWindow: 32768,
+	mcpServerEnabled: false,
+	mcpServerPort: 22360,
+	mcpServerToken: '',
 	enableImageTextExtraction: true,
-	// Indexing exclusions defaults
 	excludedFolders: [],
 	excludedFilePatterns: [],
-	// Default context notes visibility
 	contextNotesVisible: false,
-	// Review prompt defaults
 	usageTimeMs: 0,
 	lastUsageStartTimestamp: null,
 	lastReviewPromptTimestamp: null,
 	reviewLinkClicked: false
 };
+
+function generateToken(): string {
+	const bytes = new Uint8Array(24);
+	crypto.getRandomValues(bytes);
+	return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
 
 const REVIEW_PROMPT_THRESHOLD_MS = 60 * 60 * 1000;
 const REVIEW_PROMPT_REPEAT_MS = 24 * 60 * 60 * 1000;
@@ -94,8 +91,9 @@ const REVIEW_PROMPT_MESSAGE = 'Enjoying Private AI? A quick review helps others 
 
 export default class LocalLLMPlugin extends Plugin {
 	settings: LocalLLMSettings;
-	ragService: RAGService;
+	agentRuntime: AgentRuntime;
 	private llmService: any; // LLMService instance for image processing
+	private imageProcessing: AbortController | null = null;
 	private usageTrackingIntervalId: number | null = null;
 	private reviewPromptPending = false;
 
@@ -118,32 +116,27 @@ export default class LocalLLMPlugin extends Plugin {
 			systemPrompt: this.settings.systemPrompt
 		});
 
-		// Initialize RAG service (always enabled with auto-maintenance)
-		this.ragService = new RAGService(this.app, this.manifest, {
-			endpoint: this.settings.embeddingEndpoint,
-			model: this.settings.embeddingModel,
-			apiKey: this.settings.apiKey
-		}, {
-			autoMaintenance: true,
-			backgroundIndexing: true,
-			silentMode: false,
-			progressCallback: (current, total, message) => {
-				this.notifyChatViewsOfRAGProgress(current, total, message);
-			},
-			completionCallback: () => {
-				this.notifyChatViewsOfRAGComplete();
-			}
+		// Agent runtime: BM25/grep search, vault tools and the built-in MCP server
+		this.agentRuntime = new AgentRuntime({
+			app: this.app,
+			version: this.manifest.version,
+			pluginDir: this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`,
+			settings: () => this.settings,
+			log: (message, error) => LoggingUtility.error(message, error)
 		});
+		try {
+			await this.agentRuntime.init();
+		} catch (error) {
+			LoggingUtility.error('Failed to start the built-in MCP server:', error);
+			new Notice(`Private AI: could not start the MCP server on port ${this.settings.mcpServerPort}. ${error?.message ?? ''}`);
+		}
 
-		// Initialize image text extractor in RAG service
-		this.ragService.initializeImageTextExtractor(this.llmService);
-
-		// Defer RAG initialization until layout is ready to ensure vault cache is populated
 		this.app.workspace.onLayoutReady(async () => {
-			await this.ragService.initialize(this.settings);
-
-			// Always start file watcher since RAG is always enabled
-			this.ragService.startFileWatcher();
+			await this.removeLegacyVectorStore();
+			await this.agentRuntime.warmIndex();
+			if (this.settings.enableImageTextExtraction && this.agentRuntime.pendingImages().length > 0) {
+				void this.processImages(true);
+			}
 		});
 
 		// Register the view
@@ -167,20 +160,10 @@ export default class LocalLLMPlugin extends Plugin {
 		});
 
 		this.addCommand({
-			id: 'resume-paused-rag-indexing',
-			name: 'Resume paused indexing',
+			id: 'process-images',
+			name: 'Read text from images now',
 			callback: () => {
-				if (!this.ragService) {
-					new Notice('RAG service is not initialized yet.');
-					return;
-				}
-
-				const resumed = this.ragService.retryPausedIndexing();
-				if (resumed) {
-					new Notice('Retry requested. Indexing is resuming.');
-				} else {
-					new Notice('Indexing is not currently paused.');
-				}
+				void this.processImages(false);
 			}
 		});
 
@@ -193,14 +176,99 @@ export default class LocalLLMPlugin extends Plugin {
 
 		await this.flushUsageTracking();
 
-		// Stop RAG file watcher and close database gracefully
-		if (this.ragService) {
-			await this.ragService.shutdown();
+		this.imageProcessing?.abort();
+		if (this.agentRuntime) {
+			await this.agentRuntime.shutdown();
 		}
 	}
 
 	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		const data = (await this.loadData()) ?? {};
+		let changed = false;
+		for (const key of REMOVED_SETTINGS) {
+			if (key in data) {
+				delete data[key];
+				changed = true;
+			}
+		}
+		if (data.systemPrompt === LEGACY_DEFAULT_SYSTEM_PROMPT) {
+			data.systemPrompt = '';
+			changed = true;
+		}
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
+		if (!this.settings.mcpServerToken) {
+			this.settings.mcpServerToken = generateToken();
+			changed = true;
+		}
+		if (changed) {
+			await this.saveData(this.settings);
+		}
+	}
+
+	/** A Pi agent for one chat view; it reaches the vault through the built-in MCP server. */
+	createChatAgent(): PiChatAgent {
+		return new PiChatAgent({
+			settings: () => ({
+				apiEndpoint: this.settings.apiEndpoint,
+				apiKey: this.settings.apiKey,
+				model: this.settings.model,
+				maxTokens: this.settings.maxTokens,
+				temperature: this.settings.temperature,
+				systemPrompt: this.settings.systemPrompt,
+				maxToolRounds: this.settings.maxToolRounds,
+				contextWindow: this.settings.contextWindow
+			}),
+			loadTools: () => this.agentRuntime.loadAgentTools(),
+			resolveModelId: async () => {
+				const { createLLMService } = await import('./services/LLMService');
+				return createLLMService({ apiEndpoint: this.settings.apiEndpoint, apiKey: this.settings.apiKey }).getDefaultChatModel();
+			}
+		});
+	}
+
+	/** Reads text out of images with the vision model so search can find it. */
+	async processImages(background: boolean): Promise<void> {
+		if (this.imageProcessing) {
+			if (!background) new Notice('Image text extraction is already running.');
+			return;
+		}
+		const controller = new AbortController();
+		this.imageProcessing = controller;
+		try {
+			const extractor = new ImageTextExtractor(this.llmService, this.app);
+			const vision = await extractor.checkVisionCapabilities();
+			if (!vision?.supportsVision) {
+				if (!background) {
+					new Notice('Vision model required: load a vision model (like Gemma 4) in LM Studio to read text from images.', 8000);
+				}
+				return;
+			}
+			const result = await this.agentRuntime.processImages(extractor, (done, total, path) => {
+				this.notifyChatViewsOfIndexProgress(done, total, path);
+			}, controller.signal);
+			if (!background || result.processed > 0) {
+				new Notice(`Private AI read text from ${result.processed} image${result.processed === 1 ? '' : 's'}${result.failed ? ` (${result.failed} had no text)` : ''}.`);
+			}
+		} catch (error) {
+			LoggingUtility.error('Image processing failed:', error);
+			if (!background) new Notice(`Image processing failed: ${error?.message ?? error}`);
+		} finally {
+			this.imageProcessing = null;
+			this.notifyChatViewsOfIndexProgress(1, 1, '');
+		}
+	}
+
+	/** Deletes the embeddings database the old RAG pipeline kept in the plugin folder. It is derived data. */
+	private async removeLegacyVectorStore(): Promise<void> {
+		const dir = `${this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`}/vector-index`;
+		try {
+			if (await this.app.vault.adapter.exists(dir)) {
+				await this.app.vault.adapter.rmdir(dir, true);
+				LoggingUtility.log('Removed legacy vector index at', dir);
+			}
+		} catch (error) {
+			LoggingUtility.warn('Could not remove legacy vector index:', error);
+		}
 	}
 
 	async saveSettings() {
@@ -220,19 +288,16 @@ export default class LocalLLMPlugin extends Plugin {
 				systemPrompt: this.settings.systemPrompt
 			});
 
-			// Re-initialize image text extractor with updated LLM service
-			if (this.ragService) {
-				this.ragService.initializeImageTextExtractor(this.llmService);
-			}
 		}
 
-		// Update RAG service embedding config
-		if (this.ragService) {
-			this.ragService.updateEmbeddingConfig({
-				endpoint: this.settings.embeddingEndpoint,
-				model: this.settings.embeddingModel,
-				apiKey: this.settings.apiKey
-			});
+		// Start/stop the localhost MCP endpoint if those settings changed
+		if (this.agentRuntime) {
+			try {
+				await this.agentRuntime.applyServerSettings();
+			} catch (error) {
+				LoggingUtility.error('Failed to apply MCP server settings:', error);
+				new Notice(`Private AI: could not start the MCP server on port ${this.settings.mcpServerPort}. ${error?.message ?? ''}`);
+			}
 		}
 
 		// Notify all open chat views about the settings change
@@ -349,27 +414,14 @@ export default class LocalLLMPlugin extends Plugin {
 	}
 
 	/**
-	 * Notify all chat views about RAG indexing progress
+	 * Notify all chat views about image text extraction progress
 	 */
-	notifyChatViewsOfRAGProgress(current: number, total: number, message: string) {
+	notifyChatViewsOfIndexProgress(current: number, total: number, message: string) {
 		const leaves = this.app.workspace.getLeavesOfType(CHAT_VIEW_TYPE);
 		leaves.forEach(leaf => {
 			const chatView = leaf.view as ChatView;
-			if (chatView && typeof chatView.showRAGProgress === 'function') {
-				chatView.showRAGProgress(current, total, message);
-			}
-		});
-	}
-
-	/**
-	 * Notify all chat views that RAG indexing is complete
-	 */
-	notifyChatViewsOfRAGComplete() {
-		const leaves = this.app.workspace.getLeavesOfType(CHAT_VIEW_TYPE);
-		leaves.forEach(leaf => {
-			const chatView = leaf.view as ChatView;
-			if (chatView && typeof chatView.onRAGIndexingComplete === 'function') {
-				chatView.onRAGIndexingComplete();
+			if (chatView && typeof chatView.showIndexProgress === 'function') {
+				chatView.showIndexProgress(current, total, message);
 			}
 		});
 	}
@@ -574,16 +626,26 @@ class LocalLLMSettingTab extends PluginSettingTab {
 			await this.plugin.saveSettings();
 		});
 
-		new Setting(containerEl).setName('Search').setHeading();
+		new Setting(containerEl).setName('Agent').setHeading();
+
+		new Setting(containerEl)
+			.setName('Allow note changes')
+			.setDesc('Let the AI create, edit, move and delete notes when you ask it to. Deleted notes go to the trash. When off, it can only search and read.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.allowNoteChanges)
+				.onChange(async (value) => {
+					this.plugin.settings.allowNoteChanges = value;
+					await this.plugin.saveSettings();
+				}));
 
 		addStyledSlider(
 			new Setting(containerEl)
-				.setName('Max search results')
-				.setDesc('Maximum number of notes to include as context (uses RAG database for enhanced relevance)'),
+				.setName('Max tool rounds')
+				.setDesc('How many rounds of searching and reading the AI may do before it has to answer.'),
 			{
-				min: 1, max: 10, step: 1, value: this.plugin.settings.ragMaxResults,
+				min: 1, max: 20, step: 1, value: this.plugin.settings.maxToolRounds,
 				onChange: async (value) => {
-					this.plugin.settings.ragMaxResults = value;
+					this.plugin.settings.maxToolRounds = value;
 					await this.plugin.saveSettings();
 				}
 			}
@@ -591,41 +653,71 @@ class LocalLLMSettingTab extends PluginSettingTab {
 
 		addStyledSlider(
 			new Setting(containerEl)
-				.setName('Context percentage from search')
-				.setDesc('Percentage of max tokens to use for search context (50% = 2000 tokens if max tokens is 4000)'),
+				.setName('Context window')
+				.setDesc('The model\'s context length in tokens (match the value you load the model with in LM Studio). Older messages are dropped to fit.'),
 			{
-				min: 10, max: 80, step: 5, value: this.plugin.settings.searchContextPercentage,
+				min: 4096, max: 131072, step: 4096, value: this.plugin.settings.contextWindow,
 				onChange: async (value) => {
-					this.plugin.settings.searchContextPercentage = value;
+					this.plugin.settings.contextWindow = value;
 					await this.plugin.saveSettings();
-				},
-				format: (v) => v + '%'
+				}
 			}
 		);
 
-		addStyledSlider(
-			new Setting(containerEl)
-				.setName('Search relevance threshold')
-				.setDesc('Minimum relevance score for notes to be included using RAG similarity (0 = include all, 1 = very strict)'),
-			{
-				min: 0, max: 1, step: 0.1, value: this.plugin.settings.ragThreshold,
-				onChange: async (value) => {
-					this.plugin.settings.ragThreshold = value;
-					await this.plugin.saveSettings();
-				},
-				format: (v) => v.toFixed(2)
-			}
-		);
+		new Setting(containerEl).setName('Built-in MCP server').setHeading();
 
-		new Setting(containerEl).setName('All Notes Search').setHeading();
-
-		const ragStats = this.plugin.ragService.getStats();
-		const detailedStatus = this.plugin.ragService.getDetailedStatus();
+		const mcpUrl = `http://127.0.0.1:${this.plugin.settings.mcpServerPort}/mcp`;
 		new Setting(containerEl)
-			.setName('RAG database status')
-			.setDesc(`Documents indexed: ${ragStats.documentCount} (${detailedStatus.textStats.documentCount} text, ${detailedStatus.imageStats.documentCount} image) | Files: ${ragStats.fileCount} | Last updated: ${ragStats.lastUpdated.toLocaleString()} | Size: ${(ragStats.sizeInBytes / 1024).toFixed(1)} KB | Image processing: ${detailedStatus.imageProcessingEnabled ? 'enabled' : 'disabled'} | Image extractor: ${detailedStatus.imageTextExtractorAvailable ? 'available' : 'unavailable'}`);
+			.setName('Share vault tools over MCP')
+			.setDesc(`The chat always uses the plugin's built-in MCP server. Turn this on to also serve it at ${mcpUrl} (this computer only, bearer token required) so other MCP clients such as LM Studio or Claude Desktop can search and read your notes.`)
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.mcpServerEnabled)
+				.onChange(async (value) => {
+					this.plugin.settings.mcpServerEnabled = value;
+					await this.plugin.saveSettings();
+					this.display();
+				}));
 
-		new Setting(containerEl).setName('Indexing Exclusions').setHeading();
+		new Setting(containerEl)
+			.setName('MCP server port')
+			.setDesc('Port on 127.0.0.1 for the MCP endpoint.')
+			.addText(text => text
+				.setPlaceholder(String(DEFAULT_SETTINGS.mcpServerPort))
+				.setValue(String(this.plugin.settings.mcpServerPort))
+				.onChange(async (value) => {
+					const port = parseInt(value, 10);
+					if (Number.isInteger(port) && port >= 1024 && port <= 65535) {
+						this.plugin.settings.mcpServerPort = port;
+						await this.plugin.saveSettings();
+					}
+				}));
+
+		new Setting(containerEl)
+			.setName('MCP bearer token')
+			.setDesc('Clients must send "Authorization: Bearer <token>". Copy the client config, or generate a new token to revoke the old one.')
+			.addButton(button => button
+				.setButtonText('Copy client config')
+				.onClick(async () => {
+					const config = {
+						mcpServers: {
+							'obsidian-private-ai': {
+								url: `http://127.0.0.1:${this.plugin.settings.mcpServerPort}/mcp`,
+								headers: { Authorization: `Bearer ${this.plugin.settings.mcpServerToken}` }
+							}
+						}
+					};
+					await navigator.clipboard.writeText(JSON.stringify(config, null, 2));
+					new Notice('MCP client config copied.');
+				}))
+			.addButton(button => button
+				.setButtonText('New token')
+				.onClick(async () => {
+					this.plugin.settings.mcpServerToken = generateToken();
+					await this.plugin.saveSettings();
+					new Notice('New MCP token generated. Update your MCP clients.');
+				}));
+
+		new Setting(containerEl).setName('Files the AI can\'t see').setHeading();
 
 		const excludedFoldersSetting = new Setting(containerEl)
 			.setName('Excluded folders')
@@ -661,182 +753,11 @@ class LocalLLMSettingTab extends PluginSettingTab {
 				}));
 		excludedFilePatternsSetting.settingEl.addClass('local-llm-exclusion-setting');
 
-		// Smart update RAG database button
+		new Setting(containerEl).setName('Image text').setHeading();
+
 		new Setting(containerEl)
-			.setName('Update RAG database')
-			.setDesc('Update the RAG database by checking for changed files using checksums. Only processes files that have actually changed.')
-			.addButton(button => button
-				.setButtonText('Smart Update')
-				.setCta()
-				.onClick(async () => {
-					button.setButtonText('Updating...');
-					button.setDisabled(true);
-
-					try {
-						await this.plugin.ragService.buildIndex((current, total, message) => {
-							this.plugin.notifyChatViewsOfRAGProgress(current, total, message);
-						});
-
-						// Update stats display
-						const newStats = this.plugin.ragService.getStats();
-						this.updateStatusDisplay(containerEl, newStats);
-
-						// Notify chat views that indexing is complete
-						this.plugin.notifyChatViewsOfRAGComplete();
-					} catch (error) {
-						LoggingUtility.error('RAG update failed:', error);
-						new Notice(`RAG database update failed: ${error.message}`);
-					} finally {
-						button.setButtonText('Smart Update');
-						button.setDisabled(false);
-					}
-				}));
-
-		// Force rebuild RAG database button
-		new Setting(containerEl)
-			.setName('Force rebuild RAG database')
-			.setDesc('Completely rebuild the entire RAG database from scratch. Use this if you want to regenerate all embeddings.')
-			.addButton(button => button
-				.setButtonText('Force Rebuild')
-				.setWarning()
-				.onClick(async () => {
-					button.setButtonText('Rebuilding...');
-					button.setDisabled(true);
-
-					try {
-						await this.plugin.ragService.forceCompleteRebuildIndex((current, total, message) => {
-							this.plugin.notifyChatViewsOfRAGProgress(current, total, message);
-						});
-
-						// Update stats display
-						const newStats = this.plugin.ragService.getStats();
-						this.updateStatusDisplay(containerEl, newStats);
-
-						// Notify chat views that indexing is complete
-						this.plugin.notifyChatViewsOfRAGComplete();
-
-						new Notice('RAG database completely rebuilt!');
-					} catch (error) {
-						LoggingUtility.error('RAG rebuild failed:', error);
-						new Notice(`RAG database rebuild failed: ${error.message}`);
-					} finally {
-						button.setButtonText('Force Rebuild');
-						button.setDisabled(false);
-					}
-				}));
-
-		addStyledSlider(
-			new Setting(containerEl)
-				.setName('RAG relevance threshold')
-				.setDesc('Minimum relevance score for RAG results (0 = include all, 1 = very strict)'),
-			{
-				min: 0, max: 1, step: 0.1, value: this.plugin.settings.ragThreshold,
-				onChange: async (value) => {
-					this.plugin.settings.ragThreshold = value;
-					await this.plugin.saveSettings();
-				},
-				format: (v) => v.toFixed(2)
-			}
-		);
-
-		addStyledSlider(
-			new Setting(containerEl)
-				.setName('Max RAG results')
-				.setDesc('Maximum number of notes to retrieve from RAG database'),
-			{
-				min: 1, max: 10, step: 1, value: this.plugin.settings.ragMaxResults,
-				onChange: async (value) => {
-					this.plugin.settings.ragMaxResults = value;
-					await this.plugin.saveSettings();
-				}
-			}
-		);
-
-		// Embedding endpoint setting
-		new Setting(containerEl)
-			.setName('Embedding API endpoint')
-			.setDesc('The endpoint URL for the embedding API (used for generating vector embeddings)')
-			.addText(text => text
-				.setPlaceholder('http://localhost:1234/v1/embeddings')
-				.setValue(this.plugin.settings.embeddingEndpoint)
-				.onChange(async (value) => {
-					this.plugin.settings.embeddingEndpoint = value;
-					await this.plugin.saveSettings();
-					this.loadAvailableEmbeddingModels();
-				}));
-
-		// Embedding model dropdown setting
-		const embeddingModelSetting = new Setting(containerEl)
-			.setName('Embedding model')
-			.setDesc('Select a specific embedding model. (Loaded from LM Studio available models list.)')
-			.addDropdown(dropdown => {
-				const savedEmbeddingModel = this.plugin.settings.embeddingModel || DEFAULT_SETTINGS.embeddingModel;
-				dropdown.addOption(savedEmbeddingModel, savedEmbeddingModel);
-				dropdown.setValue(savedEmbeddingModel);
-
-				dropdown.onChange(async (value) => {
-					this.plugin.settings.embeddingModel = value;
-					await this.plugin.saveSettings();
-				});
-
-				(this as any).embeddingModelDropdown = dropdown;
-			});
-
-		embeddingModelSetting.addButton(button => button
-			.setButtonText('Refresh Embedding Models')
-			.setTooltip('Load available embedding models from LM Studio')
-			.onClick(async () => {
-				await this.loadAvailableEmbeddingModels();
-			}));
-
-		setTimeout(() => {
-			this.loadAvailableEmbeddingModels();
-		}, 0);
-
-
-
-		// Test embedding connection button
-		new Setting(containerEl)
-			.setName('Test embedding connection')
-			.setDesc('Test if the embedding API endpoint is working correctly')
-			.addButton(button => button
-				.setButtonText('Test Embedding')
-				.setCta()
-				.onClick(async () => {
-					button.setButtonText('Testing...');
-					button.setDisabled(true);
-
-					try {
-						// Update the embedding service config with current settings
-						this.plugin.ragService.updateEmbeddingConfig({
-							endpoint: this.plugin.settings.embeddingEndpoint,
-							model: this.plugin.settings.embeddingModel,
-							apiKey: this.plugin.settings.apiKey
-						});
-
-						// Test the connection
-						const result = await this.plugin.ragService.testEmbeddingConnection();
-
-						if (result.success) {
-							new Notice(`Embedding API connection successful. Embedding dimension: ${result.dimensions}`);
-						} else {
-							new Notice(`Embedding API connection failed: ${result.error}`);
-						}
-					} catch (error) {
-						LoggingUtility.error('Embedding test failed:', error);
-						new Notice(`Embedding test failed: ${error.message}`);
-					} finally {
-						button.setButtonText('Test Embedding');
-						button.setDisabled(false);
-					}
-				}));
-
-		new Setting(containerEl).setName('Image Processing').setHeading();
-
-		// Image text extraction setting
-		new Setting(containerEl)
-			.setName('Enable image text extraction')
-			.setDesc('Extract text from images using vision-capable LLM models and add to the RAG index. Requires a vision model like LLaVA, GPT-4V, or similar.')
+			.setName('Read text from images')
+			.setDesc('Use a vision-capable model to read the text in your images once, so searches can find it. Results are cached in the plugin folder. Requires a vision model such as Gemma 4.')
 			.addToggle(toggle => toggle
 				.setValue(this.plugin.settings.enableImageTextExtraction)
 				.onChange(async (value) => {
@@ -844,37 +765,19 @@ class LocalLLMSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 
-		// Manual image processing button
 		new Setting(containerEl)
 			.setName('Process images now')
-			.setDesc('Manually trigger image text extraction for all images in your vault. This will use your LLM to extract text and add it to the RAG index.')
+			.setDesc(`Read text from new or changed images now. ${this.plugin.agentRuntime ? `${this.plugin.agentRuntime.imageCache.count} images done so far.` : ''}`)
 			.addButton(button => button
-				.setButtonText('Process Images')
+				.setButtonText('Process images')
 				.setCta()
 				.onClick(async () => {
 					button.setButtonText('Processing...');
 					button.setDisabled(true);
-
 					try {
-						await this.plugin.ragService.processImagesManually((current, total, message) => {
-							this.plugin.notifyChatViewsOfRAGProgress(current, total, message);
-						});
-
-						// Update stats display
-						const newStats = this.plugin.ragService.getStats();
-						this.updateStatusDisplay(containerEl, newStats);
-
-						new Notice('Image processing completed successfully!');
-					} catch (error) {
-						LoggingUtility.error('Image processing failed:', error);
-						// Show user-friendly error message for vision model issues
-						if (error.message.includes('vision capabilities')) {
-							new Notice('Vision model required: your current LLM model does not support image processing. Please switch to a vision model like Gemma 4 in LM Studio and try again.', 8000);
-						} else {
-							new Notice(`Image processing failed: ${error.message}`);
-						}
+						await this.plugin.processImages(false);
 					} finally {
-						button.setButtonText('Process Images');
+						button.setButtonText('Process images');
 						button.setDisabled(false);
 					}
 				}));
@@ -1030,79 +933,6 @@ class LocalLLMSettingTab extends PluginSettingTab {
 
 			// Show notice to user
 			new Notice('Failed to load models from LM Studio. Please check your API endpoint and ensure LM Studio is running.');
-		}
-	}
-
-	/**
-	 * Load available embedding models from the LM Studio model listing endpoints.
-	 * Falls back to the current default embedding model when no embedding models are returned.
-	 */
-	private async loadAvailableEmbeddingModels(): Promise<void> {
-		const dropdown = (this as any).embeddingModelDropdown;
-		if (!dropdown) return;
-
-		const currentOrDefaultModel = this.plugin.settings.embeddingModel || DEFAULT_SETTINGS.embeddingModel;
-
-		try {
-			dropdown.selectEl.disabled = true;
-			dropdown.selectEl.empty();
-			dropdown.selectEl.createEl('option', { value: '', text: 'Loading embedding models...' });
-
-			const { createLLMService } = await import('./services/LLMService');
-			const llmService = createLLMService({
-				apiEndpoint: this.plugin.settings.embeddingEndpoint,
-				apiKey: this.plugin.settings.apiKey
-			});
-
-			const models = await llmService.getAvailableEmbeddingModels();
-
-			dropdown.selectEl.empty();
-
-			if (models.length > 0) {
-				models.forEach(model => dropdown.addOption(model, model));
-
-				if (models.includes(currentOrDefaultModel)) {
-					dropdown.setValue(currentOrDefaultModel);
-				} else {
-					dropdown.setValue(models[0]);
-					this.plugin.settings.embeddingModel = models[0];
-					await this.plugin.saveSettings();
-				}
-			} else {
-				dropdown.addOption(currentOrDefaultModel, currentOrDefaultModel);
-				dropdown.setValue(currentOrDefaultModel);
-				this.plugin.settings.embeddingModel = currentOrDefaultModel;
-				await this.plugin.saveSettings();
-			}
-
-			dropdown.selectEl.disabled = false;
-		} catch (error) {
-			LoggingUtility.error('Failed to load available embedding models:', error);
-
-			dropdown.selectEl.empty();
-			dropdown.addOption(currentOrDefaultModel, currentOrDefaultModel);
-			dropdown.setValue(currentOrDefaultModel);
-			dropdown.selectEl.disabled = false;
-		}
-	}
-
-	/**
-	 * Update the RAG status display after rebuilding
-	 */
-	private updateStatusDisplay(containerEl: HTMLElement, stats: { documentCount: number; lastUpdated: Date; sizeInBytes: number }): void {
-		// Find the status setting by looking for its text content
-		const settings = containerEl.querySelectorAll('.setting-item');
-		for (let i = 0; i < settings.length; i++) {
-			const setting = settings[i];
-			const nameEl = setting.querySelector('.setting-item-name');
-			if (nameEl && nameEl.textContent === 'RAG database status') {
-				const descEl = setting.querySelector('.setting-item-description');
-				if (descEl) {
-					const detailedStatus = this.plugin.ragService.getDetailedStatus();
-					descEl.textContent = `Documents indexed: ${stats.documentCount} (${detailedStatus.textStats.documentCount} text, ${detailedStatus.imageStats.documentCount} image) | Files: ${detailedStatus.totalFiles} | Last updated: ${stats.lastUpdated.toLocaleString()} | Size: ${(stats.sizeInBytes / 1024).toFixed(1)} KB | Image extractor: ${detailedStatus.imageTextExtractorAvailable ? 'available' : 'unavailable'}`;
-				}
-				break;
-			}
 		}
 	}
 

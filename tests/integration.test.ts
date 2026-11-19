@@ -1,8 +1,12 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { fauxAssistantMessage, fauxText, fauxToolCall, registerFauxProvider, FauxProviderRegistration } from '@mariozechner/pi-ai';
+
+// End-to-end through the real stack: ChatView -> Pi agent loop -> built-in MCP server
+// -> vault tools -> BM25 search over the files. Only the language model is scripted
+// (Pi's faux provider), and Obsidian's API is stubbed.
 
 const llmMock = {
-  testConnection: vi.fn(),
-  sendMessageStream: vi.fn()
+  testConnection: vi.fn()
 };
 
 vi.mock('../src/main', () => ({
@@ -20,6 +24,13 @@ vi.mock('../src/services/LLMService', () => ({
 
 import { ChatView } from '../src/views/ChatView';
 import { WorkspaceLeaf, MarkdownView } from 'obsidian';
+import { PiChatAgent } from '../src/agent/pi/PiChatAgent';
+import { loadMcpTools } from '../src/agent/pi/mcpTools';
+import { createVaultTools } from '../src/agent/tools/vaultTools';
+import { createVaultMcpServer } from '../src/agent/mcp/vaultMcpServer';
+import { connectInProcess } from '../src/agent/mcp/inProcessClient';
+import { VaultSearch } from '../src/agent/search/VaultSearch';
+import { InMemoryVault } from './mocks/InMemoryVault';
 
 // --- Test data ---
 
@@ -86,26 +97,33 @@ const HAYSTACK_FILES = [
 
 // --- Helpers ---
 
-function createPluginStub(contextMode: string) {
+let faux: FauxProviderRegistration;
+
+function createPluginStub(contextMode: string, files: Array<{ path: string; content: string }>) {
+  const vault = new InMemoryVault(Object.fromEntries(files.map((f) => [f.path, f.content])));
+  const search = new VaultSearch(vault);
+  const server = createVaultMcpServer(createVaultTools({ vault, search }), { version: 'test', allowWrites: () => true });
+  const clientPromise = connectInProcess(server);
+  const settings = {
+    apiEndpoint: 'http://localhost:1234/v1/chat/completions',
+    apiKey: '',
+    maxTokens: 2048,
+    temperature: 0.7,
+    systemPrompt: 'Be concise',
+    model: 'test-model',
+    contextMode,
+    maxToolRounds: 5,
+    contextWindow: 32768,
+    contextNotesVisible: false,
+  };
   return {
-    settings: {
-      apiEndpoint: 'http://localhost:1234/v1/chat/completions',
-      apiKey: '',
-      maxTokens: 2048,
-      temperature: 0.7,
-      systemPrompt: 'Be concise',
-      model: undefined,
-      contextMode,
-      ragMaxResults: 5,
-      ragThreshold: 0.1,
-      searchContextPercentage: 50,
-      contextNotesVisible: false,
-    },
-    ragService: {
-      isCurrentlyIndexing: false,
-      isIndexEmpty: () => true,
-      getStats: () => ({ documentCount: 0, fileCount: 0 }),
-    },
+    settings,
+    agentRuntime: { search, imageCache: { count: 0 } },
+    createChatAgent: () => new PiChatAgent({
+      settings: () => settings,
+      loadTools: async () => loadMcpTools(await clientPromise),
+      buildModel: () => faux.getModel(),
+    }),
     saveSettings: vi.fn(async () => undefined),
   };
 }
@@ -174,6 +192,7 @@ function createAppStubForSearch() {
         return found ? found.content : '';
       }),
       getMarkdownFiles: vi.fn(() => files),
+      getAbstractFileByPath: vi.fn((path: string) => files.find((f) => f.path === path) ?? null),
     },
     metadataCache: {
       getFileCache: vi.fn((file: any) => {
@@ -196,105 +215,118 @@ async function flushRenderTicks(n = 2): Promise<void> {
   }
 }
 
+async function waitFor(check: () => boolean, timeoutMs = 2000): Promise<void> {
+  const start = Date.now();
+  while (!check()) {
+    if (Date.now() - start > timeoutMs) throw new Error('Timed out waiting for the chat to finish');
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
+const isIdle = (view: ChatView) => !(view as any).isStreaming && !(view as any).messages.some((m: any) => m.isStreaming);
+
 // --- Tests ---
 
-describe('Integration: end-to-end context pipeline', () => {
+describe('Integration: chat view through the Pi agent and MCP tools', () => {
   beforeEach(() => {
     llmMock.testConnection.mockReset();
-    llmMock.sendMessageStream.mockReset();
+    llmMock.testConnection.mockResolvedValue({ success: true });
+    faux = registerFauxProvider({ tokensPerSecond: 100000 });
   });
 
-  it('OPEN_NOTES mode: open note content reaches the LLM and response renders', async () => {
-    llmMock.testConnection.mockResolvedValue({ success: true });
+  afterEach(() => {
+    faux.unregister();
+  });
 
-    let capturedEnhancedMessage = '';
-    llmMock.sendMessageStream.mockImplementation(
-      async (message: string, _history: any[], callback: (chunk: string, done: boolean) => Promise<void>) => {
-        capturedEnhancedMessage = message;
-        await callback('The quantum article covers a 1000-qubit processor, and the recipe describes a 72-hour cold ferment.', false);
-        await callback('', true);
+  it('OPEN_NOTES mode: open note content reaches the model and the answer renders', async () => {
+    let firstUserMessage = '';
+    faux.setResponses([
+      (context) => {
+        firstUserMessage = JSON.stringify(context.messages[0]);
+        return fauxAssistantMessage(fauxText('The quantum article covers a 1000-qubit processor, and the recipe describes a 72-hour cold ferment.'));
       },
-    );
+    ]);
 
     const app = createAppStubForOpenNotes();
-    const leaf = new WorkspaceLeaf(app);
-    const view = new ChatView(leaf as any, createPluginStub('open-notes') as any);
+    const view = new ChatView(new WorkspaceLeaf(app) as any, createPluginStub('open-notes', [QUANTUM_ARTICLE, RECIPE_ARTICLE]) as any);
     await view.onOpen();
 
     const input = view.containerEl.querySelector('textarea') as HTMLTextAreaElement;
     const sendButton = view.containerEl.querySelector('.local-llm-send-button') as HTMLButtonElement;
-
     input.value = 'summarize the current articles';
     sendButton.click();
-    await flushRenderTicks(8);
+    await flushRenderTicks(2);
+    await waitFor(() => isIdle(view));
 
-    // The enhanced message wraps vault context around the user question
-    expect(capturedEnhancedMessage).toContain('Context from your Obsidian vault:');
-    expect(capturedEnhancedMessage).toContain('User question: summarize the current articles');
-    expect(capturedEnhancedMessage).toContain('--- RELEVANT OBSIDIAN NOTES ---');
+    expect(firstUserMessage).toContain('User question: summarize the current articles');
+    expect(firstUserMessage).toContain('--- RELEVANT OBSIDIAN NOTES ---');
+    expect(firstUserMessage).toContain('1000-qubit quantum processor');
+    expect(firstUserMessage).toContain('500g bread flour');
+    expect(firstUserMessage).toContain('Quantum Computing Advances');
+    expect(firstUserMessage).toContain('Sourdough Bread Recipe');
 
-    // Both notes' content is included
-    expect(capturedEnhancedMessage).toContain('1000-qubit quantum processor');
-    expect(capturedEnhancedMessage).toContain('topological qubits');
-    expect(capturedEnhancedMessage).toContain('72-hour cold ferment');
-    expect(capturedEnhancedMessage).toContain('500g bread flour');
-
-    // Titles and full relevance for open notes
-    expect(capturedEnhancedMessage).toContain('Quantum Computing Advances');
-    expect(capturedEnhancedMessage).toContain('Sourdough Bread Recipe');
-    expect(capturedEnhancedMessage).toContain('Relevance: 100.0%');
-
-    // LLM response renders in the DOM
     const rendered = view.containerEl.textContent ?? '';
     expect(rendered).toContain('1000-qubit processor');
     expect(rendered).toContain('72-hour cold ferment');
-
-    expect(llmMock.sendMessageStream).toHaveBeenCalledTimes(1);
+    expect(rendered).toContain('Used 2 notes as context');
   });
 
-  it('SEARCH mode: keyword search finds needle file and excludes irrelevant notes', async () => {
-    llmMock.testConnection.mockResolvedValue({ success: true });
-
-    let capturedEnhancedMessage = '';
-    llmMock.sendMessageStream.mockImplementation(
-      async (message: string, _history: any[], callback: (chunk: string, done: boolean) => Promise<void>) => {
-        capturedEnhancedMessage = message;
-        await callback('The xylophone-paradox-7 discovery appears in the superconductor note about LK-99.', false);
-        await callback('', true);
+  it('SEARCH mode: the agent finds the needle note with BM25 search and reads it', async () => {
+    let searchResult = '';
+    let firstUserMessage = '';
+    faux.setResponses([
+      (context) => {
+        firstUserMessage = JSON.stringify(context.messages[0]);
+        return fauxAssistantMessage([fauxToolCall('search_notes', { query: 'xylophone-paradox-7 superconductor' })], { stopReason: 'toolUse' });
       },
-    );
+      (context) => {
+        searchResult = JSON.stringify(context.messages.filter((m) => m.role === 'toolResult')[0]);
+        return fauxAssistantMessage([fauxToolCall('read_note', { path: 'research/superconductor-breakthrough.md' })], { stopReason: 'toolUse' });
+      },
+      fauxAssistantMessage(fauxText('The xylophone-paradox-7 discovery appears in the superconductor note about LK-99.')),
+    ]);
 
     const app = createAppStubForSearch();
-    const leaf = new WorkspaceLeaf(app);
-    const view = new ChatView(leaf as any, createPluginStub('search') as any);
+    const view = new ChatView(new WorkspaceLeaf(app) as any, createPluginStub('search', HAYSTACK_FILES) as any);
     await view.onOpen();
+    expect(view.containerEl.textContent ?? '').toContain('The agent searches 4 notes');
 
     const input = view.containerEl.querySelector('textarea') as HTMLTextAreaElement;
     const sendButton = view.containerEl.querySelector('.local-llm-send-button') as HTMLButtonElement;
-
     input.value = 'xylophone-paradox-7 superconductor';
     sendButton.click();
-    await flushRenderTicks(8);
+    await flushRenderTicks(2);
+    await waitFor(() => isIdle(view));
 
-    // The enhanced message contains vault context
-    expect(capturedEnhancedMessage).toContain('Context from your Obsidian vault:');
-    expect(capturedEnhancedMessage).toContain('User question: xylophone-paradox-7 superconductor');
+    // No notes are pasted into the prompt; the agent searches for itself.
+    expect(firstUserMessage).not.toContain('RELEVANT OBSIDIAN NOTES');
+    expect(searchResult).toContain('research/superconductor-breakthrough.md');
+    expect(searchResult).not.toContain('grocery-list');
+    expect(searchResult).not.toContain('travel-plans');
 
-    // The needle file IS in the context
-    expect(capturedEnhancedMessage).toContain('xylophone-paradox-7');
-    expect(capturedEnhancedMessage).toContain('Room Temperature Superconductor');
-    expect(capturedEnhancedMessage).toContain('superconductor-breakthrough.md');
-
-    // Irrelevant files are NOT in the context
-    expect(capturedEnhancedMessage).not.toContain('grocery-list');
-    expect(capturedEnhancedMessage).not.toContain('Milk');
-    expect(capturedEnhancedMessage).not.toContain('Chicken breast');
-
-    // LLM response renders in the DOM
     const rendered = view.containerEl.textContent ?? '';
     expect(rendered).toContain('xylophone-paradox-7 discovery');
-    expect(rendered).toContain('LK-99');
+    expect(rendered).toContain('Thought process');
+    expect(rendered).toContain('Used 1 note as context');
+  });
 
-    expect(llmMock.sendMessageStream).toHaveBeenCalledTimes(1);
+  it('NONE mode: no tools and no notes are given to the model', async () => {
+    let toolCount = -1;
+    faux.setResponses([(context) => {
+      toolCount = (context.tools ?? []).length;
+      return fauxAssistantMessage(fauxText('Hello!'));
+    }]);
+
+    const app = createAppStubForSearch();
+    const view = new ChatView(new WorkspaceLeaf(app) as any, createPluginStub('none', HAYSTACK_FILES) as any);
+    await view.onOpen();
+    const input = view.containerEl.querySelector('textarea') as HTMLTextAreaElement;
+    input.value = 'hi';
+    (view.containerEl.querySelector('.local-llm-send-button') as HTMLButtonElement).click();
+    await flushRenderTicks(2);
+    await waitFor(() => isIdle(view));
+
+    expect(toolCount).toBe(0);
+    expect(view.containerEl.textContent ?? '').toContain('Hello!');
   });
 });

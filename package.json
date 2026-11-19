@@ -32,11 +32,12 @@
   },
   "homepage": "https://github.com/gabosgab/ObsidianPrivateAI#readme",
   "dependencies": {
-    "@webreflection/sql.js": "^0.3.4",
-    "crc-32": "^1.2.2"
+    "@mariozechner/pi-agent-core": "^0.73.1",
+    "@mariozechner/pi-ai": "^0.73.1",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "typebox": "^1.4.7"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.8",
     "@types/mocha": "^10.0.10",
     "@types/node": "^20.19.1",
     "@typescript-eslint/eslint-plugin": "^6.0.0",
