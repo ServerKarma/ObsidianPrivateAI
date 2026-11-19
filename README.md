@@ -23,7 +23,7 @@ Enjoy!
 - **Cross Platform**: Supports for most modern Mac and Windows machines
 - **Agent that works your vault**: The AI searches and reads notes itself, then cites the notes it used. When you ask, it can also create, edit, move or delete notes, but every change opens a dialog showing exactly what will change, and nothing happens unless you click Allow. It runs on the open-source [Pi](https://github.com/badlogic/pi-mono) agent harness.
 - **No embeddings, no index database**: Notes are found with BM25 ranked search plus grep over the files on disk, so there's no embedding model to load and nothing to rebuild. Text in images can be read once by a vision model and searched too.
-- **Built-in MCP server**: The vault tools live in an MCP server inside the plugin. The chat uses it directly, and you can optionally share it on `127.0.0.1` (token protected) with other MCP clients such as LM Studio or Claude Desktop.
+- **Built-in MCP server**: The vault tools live in an MCP server inside the plugin, used only by the chat. It runs in-process with no network port, so no other app can reach your vault through it.
 - **Open Tab Context**: Focus your conversation on specific notes for focused insights
 - **Performance Tuning**: Customize models, search parameters, token limits, and more to tune performance for your hardware
 
@@ -46,10 +46,8 @@ Enjoy!
 ```
 Chat view ──► Pi agent loop (pi-agent-core + pi-ai, OpenAI-compatible) ──► LM Studio
                   │
-                  ▼  tool calls over MCP (in-process)
+                  ▼  tool calls over MCP (in-process only, no network port)
           Built-in MCP server ──► vault tools ──► BM25 index + grep over your notes
-                  ▲
-                  └── optional: http://127.0.0.1:22360/mcp for other MCP clients
 ```
 
 Pick a model with good native tool use (Qwen 3, Gemma 4, gpt-oss) for the best results.

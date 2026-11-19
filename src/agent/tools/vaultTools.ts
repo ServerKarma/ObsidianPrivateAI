@@ -35,8 +35,8 @@ export interface ChangeRequest {
 
 /**
  * Asks the user to approve one change. Resolves true only on an explicit yes.
- * Every write tool calls this before touching the vault, for the chat agent and
- * for outside MCP clients alike, so nothing is written without the user's say-so.
+ * Every write tool calls this before touching the vault, so nothing is written
+ * without the user's say-so.
  */
 export type ConfirmChange = (request: ChangeRequest) => Promise<boolean>;
 

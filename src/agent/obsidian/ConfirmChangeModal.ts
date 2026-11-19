@@ -63,7 +63,7 @@ class ConfirmChangeModal extends Modal {
 
 /**
  * Confirmation for every write tool. Requests are shown one at a time, so
- * concurrent callers (for example an outside MCP client) never stack dialogs.
+ * concurrent tool calls never stack dialogs.
  * A request nobody answers within the timeout is denied.
  */
 export function createModalConfirm(app: App, source: () => string, timeoutMs = 5 * 60 * 1000): ConfirmChange {

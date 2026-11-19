@@ -25,10 +25,6 @@ export interface LocalLLMSettings {
 	allowNoteChanges: boolean;
 	maxToolRounds: number;
 	contextWindow: number;
-	// Built-in MCP server, exposed on localhost for other MCP clients
-	mcpServerEnabled: boolean;
-	mcpServerPort: number;
-	mcpServerToken: string;
 	// Image processing settings
 	enableImageTextExtraction: boolean;
 	// Files the agent can't see
@@ -47,7 +43,7 @@ export interface LocalLLMSettings {
 const LEGACY_DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant with access to the user's Obsidian vault. When provided with context from their notes, use that information to provide more accurate and relevant responses. Reference specific notes when appropriate, but focus on answering the user's question clearly and concisely.";
 
 /** Settings from the removed embedding/vector-store pipeline, dropped from data.json on load. */
-const REMOVED_SETTINGS = ['searchMaxResults', 'searchContextPercentage', 'searchThreshold', 'enableRAG', 'ragThreshold', 'ragMaxResults', 'embeddingEndpoint', 'embeddingModel', 'contextMode'];
+const REMOVED_SETTINGS = ['searchMaxResults', 'searchContextPercentage', 'searchThreshold', 'enableRAG', 'ragThreshold', 'ragMaxResults', 'embeddingEndpoint', 'embeddingModel', 'contextMode', 'mcpServerEnabled', 'mcpServerPort', 'mcpServerToken'];
 
 export const DEFAULT_SETTINGS: LocalLLMSettings = {
 	apiEndpoint: 'http://localhost:1234/v1/chat/completions',
@@ -58,9 +54,6 @@ export const DEFAULT_SETTINGS: LocalLLMSettings = {
 	allowNoteChanges: true,
 	maxToolRounds: 8,
 	contextWindow: 32768,
-	mcpServerEnabled: false,
-	mcpServerPort: 22360,
-	mcpServerToken: '',
 	enableImageTextExtraction: true,
 	excludedFolders: [],
 	excludedFilePatterns: [],
@@ -70,12 +63,6 @@ export const DEFAULT_SETTINGS: LocalLLMSettings = {
 	lastReviewPromptTimestamp: null,
 	reviewLinkClicked: false
 };
-
-function generateToken(): string {
-	const bytes = new Uint8Array(24);
-	crypto.getRandomValues(bytes);
-	return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-}
 
 const REVIEW_PROMPT_THRESHOLD_MS = 60 * 60 * 1000;
 const REVIEW_PROMPT_REPEAT_MS = 24 * 60 * 60 * 1000;
@@ -120,8 +107,7 @@ export default class LocalLLMPlugin extends Plugin {
 		try {
 			await this.agentRuntime.init();
 		} catch (error) {
-			LoggingUtility.error('Failed to start the built-in MCP server:', error);
-			new Notice(`Private AI: could not start the MCP server on port ${this.settings.mcpServerPort}. ${error?.message ?? ''}`);
+			LoggingUtility.error('Failed to start the agent runtime:', error);
 		}
 
 		this.app.workspace.onLayoutReady(async () => {
@@ -189,10 +175,6 @@ export default class LocalLLMPlugin extends Plugin {
 			changed = true;
 		}
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
-		if (!this.settings.mcpServerToken) {
-			this.settings.mcpServerToken = generateToken();
-			changed = true;
-		}
 		if (changed) {
 			await this.saveData(this.settings);
 		}
@@ -290,16 +272,6 @@ export default class LocalLLMPlugin extends Plugin {
 				systemPrompt: this.settings.systemPrompt
 			});
 
-		}
-
-		// Start/stop the localhost MCP endpoint if those settings changed
-		if (this.agentRuntime) {
-			try {
-				await this.agentRuntime.applyServerSettings();
-			} catch (error) {
-				LoggingUtility.error('Failed to apply MCP server settings:', error);
-				new Notice(`Private AI: could not start the MCP server on port ${this.settings.mcpServerPort}. ${error?.message ?? ''}`);
-			}
 		}
 	}
 
@@ -624,59 +596,6 @@ class LocalLLMSettingTab extends PluginSettingTab {
 				}
 			}
 		);
-
-		new Setting(containerEl).setName('Built-in MCP server').setHeading();
-
-		const mcpUrl = `http://127.0.0.1:${this.plugin.settings.mcpServerPort}/mcp`;
-		new Setting(containerEl)
-			.setName('Share vault tools over MCP')
-			.setDesc(`The chat always uses the plugin's built-in MCP server. Turn this on to also serve it at ${mcpUrl} (this computer only, bearer token required) so other MCP clients such as LM Studio or Claude Desktop can search and read your notes.`)
-			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.mcpServerEnabled)
-				.onChange(async (value) => {
-					this.plugin.settings.mcpServerEnabled = value;
-					await this.plugin.saveSettings();
-					this.display();
-				}));
-
-		new Setting(containerEl)
-			.setName('MCP server port')
-			.setDesc('Port on 127.0.0.1 for the MCP endpoint.')
-			.addText(text => text
-				.setPlaceholder(String(DEFAULT_SETTINGS.mcpServerPort))
-				.setValue(String(this.plugin.settings.mcpServerPort))
-				.onChange(async (value) => {
-					const port = parseInt(value, 10);
-					if (Number.isInteger(port) && port >= 1024 && port <= 65535) {
-						this.plugin.settings.mcpServerPort = port;
-						await this.plugin.saveSettings();
-					}
-				}));
-
-		new Setting(containerEl)
-			.setName('MCP bearer token')
-			.setDesc('Clients must send "Authorization: Bearer <token>". Copy the client config, or generate a new token to revoke the old one.')
-			.addButton(button => button
-				.setButtonText('Copy client config')
-				.onClick(async () => {
-					const config = {
-						mcpServers: {
-							'obsidian-private-ai': {
-								url: `http://127.0.0.1:${this.plugin.settings.mcpServerPort}/mcp`,
-								headers: { Authorization: `Bearer ${this.plugin.settings.mcpServerToken}` }
-							}
-						}
-					};
-					await navigator.clipboard.writeText(JSON.stringify(config, null, 2));
-					new Notice('MCP client config copied.');
-				}))
-			.addButton(button => button
-				.setButtonText('New token')
-				.onClick(async () => {
-					this.plugin.settings.mcpServerToken = generateToken();
-					await this.plugin.saveSettings();
-					new Notice('New MCP token generated. Update your MCP clients.');
-				}));
 
 		new Setting(containerEl).setName('Files the AI can\'t see').setHeading();
 

@@ -1,6 +1,4 @@
 import { browser, expect } from "@wdio/globals";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { FakeLmStudio, lastUserText, startFakeLmStudio, toolResults } from "../support/fakeLmStudio";
 
 /**
@@ -120,39 +118,66 @@ describe("Private AI agent in real Obsidian", function () {
         expect(stillThere).toBe(true);
     });
 
-    it("serves the vault tools over localhost MCP when enabled", async function () {
-        const { port, token } = await browser.executeObsidian(async ({ app }) => {
+    it("keeps the vault tools inside Obsidian: no MCP sharing setting or network listener", async function () {
+        const state = await browser.executeObsidian(({ app }) => {
             const plugin = (app as any).plugins.plugins["private-ai"];
-            plugin.settings.mcpServerEnabled = true;
-            plugin.settings.mcpServerPort = 22399;
-            await plugin.saveSettings();
-            return { port: plugin.settings.mcpServerPort, token: plugin.settings.mcpServerToken };
+            return {
+                settingKeys: Object.keys(plugin.settings).filter((k) => /mcp/i.test(k)),
+                runtimeKeys: Object.getOwnPropertyNames(Object.getPrototypeOf(plugin.agentRuntime)).filter((k) => /http|url|applyServer|listen/i.test(k)),
+            };
         });
-        const client = new Client({ name: "e2e", version: "1" });
-        await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), {
-            requestInit: { headers: { Authorization: `Bearer ${token}` } },
-        }));
-        const { tools } = await client.listTools();
-        expect(tools.map((t) => t.name)).toContain("search_notes");
-        const result = await client.callTool({ name: "grep_notes", arguments: { pattern: "Rheem" } });
-        expect((result.content as Array<{ text: string }>)[0].text).toContain("Home/Water Heater Replacement.md");
+        expect(state.settingKeys).toEqual([]);
+        expect(state.runtimeKeys).toEqual([]);
+        await expect(fetch("http://127.0.0.1:22360/mcp", { method: "POST" })).rejects.toThrow();
+    });
 
-        // Outside apps go through the same confirmation dialog for changes.
-        const pending = client.callTool({ name: "create_note", arguments: { path: "From Outside", content: "hi" } });
-        const dialogText = await answerConfirmation("deny");
-        expect(dialogText).toContain("Create From Outside.md");
-        const denied = await pending;
-        expect(denied.isError).toBe(true);
-        const created = await browser.executeObsidian(({ app }) => !!app.vault.getFileByPath("From Outside.md"));
-        expect(created).toBe(false);
-        await client.close();
-
-        await browser.executeObsidian(async ({ app }) => {
-            const plugin = (app as any).plugins.plugins["private-ai"];
-            plugin.settings.mcpServerEnabled = false;
-            await plugin.saveSettings();
+    it("keeps the exclusion text boxes inside their rows in settings", async function () {
+        // Obsidian 1.15 opens settings in a window of its own.
+        const main = await browser.getWindowHandle();
+        await browser.executeObsidian(({ app }) => {
+            (app as any).setting.open();
+            (app as any).setting.openTabById("private-ai");
         });
-        await expect(fetch(`http://127.0.0.1:${port}/mcp`, { method: "POST" })).rejects.toThrow();
+        let settingsWindow = "";
+        await browser.waitUntil(async () => {
+            for (const h of await browser.getWindowHandles()) {
+                if (h === main) continue;
+                await browser.switchToWindow(h);
+                if ((await browser.getTitle()).startsWith("Settings")) { settingsWindow = h; return true; }
+            }
+            return false;
+        }, { timeout: 10000, timeoutMsg: "the settings window never opened" });
+        try {
+            const measure = async (width: number) => {
+                const resized = await browser.execute((w) => {
+                    try {
+                        (window as any).require("@electron/remote").getCurrentWindow().setSize(w, 880);
+                        return true;
+                    } catch {
+                        return false;
+                    }
+                }, width);
+                await browser.waitUntil(async () => !resized || (await browser.execute(() => window.innerWidth)) === width, { timeout: 5000 });
+                await browser.$(".local-llm-exclusion-setting").waitForExist({ timeout: 5000 });
+                return browser.execute(() => [...document.querySelectorAll(".local-llm-exclusion-setting")].map((row) => {
+                    const r = row.getBoundingClientRect();
+                    const t = row.querySelector("textarea")!.getBoundingClientRect();
+                    return { vw: window.innerWidth, rowRight: Math.round(r.right), boxRight: Math.round(t.right), boxWidth: Math.round(t.width) };
+                }));
+            };
+            // 1160 is the width where the old layout pushed the boxes out of their rows.
+            for (const width of [1160, 700]) {
+                const rows = await measure(width);
+                expect(rows.length).toBe(2);
+                for (const m of rows) {
+                    expect(m.boxRight).toBeLessThanOrEqual(m.rowRight);
+                    expect(m.boxWidth).toBeGreaterThan(150);
+                }
+            }
+        } finally {
+            await browser.execute(() => window.close());
+            await browser.switchToWindow(main);
+        }
     });
 
     it("reads the note the user has open when they ask about \"this note\"", async function () {

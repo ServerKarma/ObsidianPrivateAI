@@ -9,7 +9,6 @@ import { createVaultTools, describeWorkspace, VaultToolDefinition } from '../too
 import { createModalConfirm } from './ConfirmChangeModal';
 import { createVaultMcpServer } from '../mcp/vaultMcpServer';
 import { connectInProcess } from '../mcp/inProcessClient';
-import { McpHttpHost } from '../mcp/McpHttpHost';
 import { loadMcpTools } from '../pi/mcpTools';
 import { isImage } from '../vault/VaultPort';
 
@@ -17,9 +16,6 @@ export interface AgentRuntimeSettings {
 	excludedFolders: string[];
 	excludedFilePatterns: string[];
 	allowNoteChanges: boolean;
-	mcpServerEnabled: boolean;
-	mcpServerPort: number;
-	mcpServerToken: string;
 }
 
 export interface AgentRuntimeOptions {
@@ -33,8 +29,9 @@ export interface AgentRuntimeOptions {
 
 /**
  * Owns the agent's plumbing inside the plugin: vault adapter, BM25/grep
- * search, the vault tools, the built-in MCP server (in-process for the Pi
- * agent, optionally on localhost for other clients) and the image text cache.
+ * search, the vault tools, the built-in MCP server and the image text cache.
+ * The MCP server is in-process only: it has no network listener, and nothing
+ * outside Obsidian can reach the vault tools.
  */
 export class AgentRuntime {
 	readonly vault: ObsidianVaultAdapter;
@@ -42,8 +39,6 @@ export class AgentRuntime {
 	readonly imageCache: ImageTextCache;
 	readonly tools: VaultToolDefinition[];
 	private client: Client | null = null;
-	private httpHost: McpHttpHost | null = null;
-	private httpKey = '';
 
 	constructor(private readonly options: AgentRuntimeOptions) {
 		const { app, pluginDir, settings } = options;
@@ -56,7 +51,6 @@ export class AgentRuntime {
 
 	async init(): Promise<void> {
 		await this.imageCache.load();
-		await this.applyServerSettings();
 	}
 
 	/** A new MCP server instance over the shared vault tools. */
@@ -77,37 +71,6 @@ export class AgentRuntime {
 		return loadMcpTools(await this.getClient());
 	}
 
-	get mcpUrl(): string | null {
-		return this.httpHost?.isRunning ? this.httpHost.url : null;
-	}
-
-	/** Starts, restarts or stops the localhost MCP endpoint to match settings. */
-	async applyServerSettings(): Promise<void> {
-		const s = this.options.settings();
-		const key = s.mcpServerEnabled ? `${s.mcpServerPort}:${s.mcpServerToken}` : '';
-		if (key === this.httpKey && (!key || this.httpHost?.isRunning)) return;
-		if (this.httpHost) {
-			await this.httpHost.stop();
-			this.httpHost = null;
-		}
-		this.httpKey = key;
-		if (!key) return;
-		const host = new McpHttpHost({
-			port: s.mcpServerPort,
-			token: s.mcpServerToken,
-			createServer: () => this.createMcpServer(),
-			log: this.options.log,
-		});
-		try {
-			await host.start();
-			this.httpHost = host;
-		} catch (error) {
-			this.httpKey = '';
-			throw error;
-		}
-	}
-
-	/** Warms the BM25 index so the first question doesn't pay for it. */
 	/** The per-turn workspace note: which note is active and which are open (paths only). */
 	workspaceContext(): string {
 		return `[Obsidian workspace]\n${describeWorkspace(this.vault, this.search)}`;
@@ -134,8 +97,6 @@ export class AgentRuntime {
 	}
 
 	async shutdown(): Promise<void> {
-		await this.httpHost?.stop();
-		this.httpHost = null;
 		await this.client?.close();
 		this.client = null;
 		await this.imageCache.save().catch(() => undefined);

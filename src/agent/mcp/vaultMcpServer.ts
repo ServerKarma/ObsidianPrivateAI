@@ -12,9 +12,8 @@ export interface VaultMcpServerOptions {
 
 /**
  * The plugin's built-in MCP server. It is the single place vault tools are
- * published: the in-plugin Pi agent connects to it in-process, and the same
- * server can be exposed on localhost for other MCP clients (LM Studio,
- * Claude Desktop, ...).
+ * published. Only the in-plugin Pi agent connects to it, in-process. It is
+ * never exposed outside Obsidian: there is no network transport.
  */
 export function createVaultMcpServer(tools: VaultToolDefinition[], options: VaultMcpServerOptions): Server {
 	const server = new Server(

@@ -31,4 +31,11 @@ describe('agent platform boundary', () => {
 		const src = walk(join(__dirname, '../../src')).map((f) => readFileSync(f, 'utf8')).join('\n');
 		expect(src).not.toMatch(/sql\.js|UnifiedVectorDatabase|EmbeddingService|RAGService/);
 	});
+
+	it('never exposes the vault outside Obsidian (no servers, sockets or MCP network transports)', () => {
+		const offenders = walk(join(__dirname, '../../src')).filter((f) =>
+			/['"](node:)?(http|https|net|tls|dgram|ws)['"]|server\/(streamableHttp|sse|stdio)|\.listen\(|createServer\(/.test(readFileSync(f, 'utf8')),
+		);
+		expect(offenders.map((f) => relative(AGENT_DIR, f))).toEqual([]);
+	});
 });
