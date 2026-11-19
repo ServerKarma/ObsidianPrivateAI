@@ -8,8 +8,6 @@ import { CleanupResult, removeLegacyEmbeddingFiles } from './services/LegacyEmbe
 import '../styles.css';
 import manifest from '../manifest.json';
 
-import { DEFAULT_SYSTEM_PROMPT, estimateTokens } from './agent/pi/systemPrompt';
-
 export const CHAT_VIEW_TYPE = 'local-llm-chat-view';
 
 export interface LocalLLMSettings {
@@ -18,8 +16,6 @@ export interface LocalLLMSettings {
 	temperature: number;
 	// User preferences appended to the agent's system prompt
 	systemPrompt: string;
-	// The agent's system prompt, editable in settings (starts as DEFAULT_SYSTEM_PROMPT)
-	agentSystemPrompt: string;
 	// Model setting (optional - if not set, the first loaded chat model is used)
 	model?: string;
 	// API key (optional) - if specified, used as a Bearer token (works with LM Studio)
@@ -54,7 +50,6 @@ export const DEFAULT_SETTINGS: LocalLLMSettings = {
 	maxTokens: 10000,
 	temperature: 0.7,
 	systemPrompt: '',
-	agentSystemPrompt: DEFAULT_SYSTEM_PROMPT,
 	enableDeveloperLogging: false,
 	allowNoteChanges: true,
 	maxToolRounds: 8,
@@ -196,7 +191,6 @@ export default class LocalLLMPlugin extends Plugin {
 				maxTokens: this.settings.maxTokens,
 				temperature: this.settings.temperature,
 				systemPrompt: this.settings.systemPrompt,
-				agentSystemPrompt: this.settings.agentSystemPrompt,
 				maxToolRounds: this.settings.maxToolRounds,
 				contextWindow: this.settings.contextWindow
 			}),
@@ -555,7 +549,7 @@ class LocalLLMSettingTab extends PluginSettingTab {
 		// System prompt setting with textarea below
 		new Setting(containerEl)
 			.setName('What personal preferences should be considered in responses?')
-			.setDesc('Customize the AI\'s personality and behavior. This is added to the system prompt below in all conversations.');
+			.setDesc('Customize the AI\'s personality and behavior. This system prompt will be used in all conversations.');
 
 		const systemPromptTextArea = containerEl.createEl('textarea', {
 			cls: 'local-llm-system-prompt-textarea',
@@ -568,35 +562,6 @@ class LocalLLMSettingTab extends PluginSettingTab {
 
 		systemPromptTextArea.addEventListener('input', async () => {
 			this.plugin.settings.systemPrompt = systemPromptTextArea.value;
-			await this.plugin.saveSettings();
-		});
-
-		// The agent's system prompt: a setting, so it can be edited or trimmed to save context.
-		const promptSize = () => {
-			const tokens = estimateTokens(this.plugin.settings.agentSystemPrompt);
-			return `The instructions sent to the model with every message: how to search, read and change your notes. Edit or shorten them to change how the AI works or to free up context. Currently about ${tokens} tokens.`;
-		};
-		const agentPromptSetting = new Setting(containerEl)
-			.setName('System prompt')
-			.setDesc(promptSize())
-			.addButton(button => button
-				.setButtonText('Reset to default')
-				.onClick(async () => {
-					this.plugin.settings.agentSystemPrompt = DEFAULT_SYSTEM_PROMPT;
-					agentPromptTextArea.value = DEFAULT_SYSTEM_PROMPT;
-					agentPromptSetting.setDesc(promptSize());
-					await this.plugin.saveSettings();
-				}));
-
-		const agentPromptTextArea = containerEl.createEl('textarea', {
-			cls: 'local-llm-system-prompt-textarea local-llm-agent-prompt-textarea',
-			attr: { rows: '14', 'data-testid': 'agent-system-prompt' }
-		});
-		agentPromptTextArea.value = this.plugin.settings.agentSystemPrompt;
-
-		agentPromptTextArea.addEventListener('input', async () => {
-			this.plugin.settings.agentSystemPrompt = agentPromptTextArea.value;
-			agentPromptSetting.setDesc(promptSize());
 			await this.plugin.saveSettings();
 		});
 

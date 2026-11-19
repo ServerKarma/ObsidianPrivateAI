@@ -1,6 +1,6 @@
 import { Agent, AgentMessage, AgentTool, StreamFn } from '@mariozechner/pi-agent-core';
 import type { Model } from '@mariozechner/pi-ai';
-import { buildSystemPrompt, DEFAULT_SYSTEM_PROMPT } from './systemPrompt';
+import { buildSystemPrompt } from './systemPrompt';
 
 export interface PiChatSettings {
 	/** OpenAI-compatible chat completions URL, e.g. http://localhost:1234/v1/chat/completions */
@@ -11,8 +11,6 @@ export interface PiChatSettings {
 	temperature: number;
 	/** User preferences appended to the system prompt. */
 	systemPrompt: string;
-	/** The system prompt itself, from settings. Left out, the default is used; empty means none. */
-	agentSystemPrompt?: string;
 	/** Max rounds of tool calls before the agent must answer. */
 	maxToolRounds: number;
 	contextWindow: number;
@@ -147,7 +145,7 @@ export class PiChatAgent {
 		const hardLimit = settings.maxToolRounds + 2;
 		const agent = new Agent({
 			initialState: {
-				systemPrompt: buildSystemPrompt(settings.agentSystemPrompt ?? DEFAULT_SYSTEM_PROMPT, settings.systemPrompt, this.deps.now?.()),
+				systemPrompt: buildSystemPrompt(settings.systemPrompt, tools.length > 0, this.deps.now?.()),
 				model,
 				thinkingLevel: 'off',
 				tools,

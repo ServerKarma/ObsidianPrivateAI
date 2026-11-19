@@ -895,12 +895,6 @@
 	resize: vertical;
 }
 
-.local-llm-agent-prompt-textarea {
-	font-family: var(--font-monospace);
-	font-size: var(--font-ui-smaller);
-	line-height: 1.5;
-}
-
 /* Exclusion settings layout. Sized from the settings pane, not the window, so the
    text boxes never run past the row: side by side when there is room, stacked otherwise. */
 .local-llm-exclusion-setting {

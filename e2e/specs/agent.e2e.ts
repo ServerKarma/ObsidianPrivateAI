@@ -283,42 +283,6 @@ describe("Private AI agent in real Obsidian", function () {
         expect(leftovers).toEqual({ picker: false, status: false });
     });
 
-    it("sends the system prompt from settings, not a hard-coded one", async function () {
-        const systemMessage = (request: any): string => {
-            const content = (request.messages ?? []).find((m: any) => m.role === "system")?.content;
-            return typeof content === "string" ? content : JSON.stringify(content ?? "");
-        };
-        const setPrompt = (prompt: string | null) => browser.executeObsidian(async ({ app }, value) => {
-            const plugin = (app as any).plugins.plugins["private-ai"];
-            const previous: string = plugin.settings.agentSystemPrompt;
-            if (value !== null) {
-                plugin.settings.agentSystemPrompt = value;
-                await plugin.saveSettings();
-            }
-            return previous;
-        }, prompt);
-
-        // A fresh install starts with the default prompt as the setting's value.
-        const initial = await setPrompt(null);
-        expect(initial).toContain("You are Private AI");
-        expect(initial).toContain("search_notes");
-        expect(systemMessage(llm.requests.find((r) => r.stream && r.tools))).toContain(initial);
-
-        await setPrompt("EDITED-PROMPT-7731: answer briefly.");
-        try {
-            const before = llm.requests.length;
-            await ask("Say hello");
-            await browser.waitUntil(async () => llm.requests.length > before && (await lastAssistantText()).includes("Hello from the fake model"), { timeout: 20000 });
-            const sent = systemMessage(llm.requests[llm.requests.length - 1]);
-            expect(sent).toContain("EDITED-PROMPT-7731: answer briefly.");
-            expect(sent).toContain("Today's date is");
-            expect(sent).not.toContain("You are Private AI");
-            expect(sent).not.toContain("search_notes");
-        } finally {
-            await setPrompt(initial);
-        }
-    });
-
     it("deletes the old embedding index files from disk", async function () {
         const left = await browser.executeObsidian(async ({ app }) => {
             const plugin = (app as any).plugins.plugins["private-ai"];
