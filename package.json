@@ -39,22 +39,34 @@
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
-    "@types/node": "^20.19.1",
-    "@typescript-eslint/eslint-plugin": "^6.0.0",
-    "@typescript-eslint/parser": "^6.0.0",
-    "@wdio/cli": "^9.29.1",
-    "@wdio/globals": "^9.29.1",
-    "@wdio/local-runner": "^9.29.1",
-    "@wdio/mocha-framework": "^9.29.1",
+    "@types/node": "^22.19.0",
+    "@typescript-eslint/eslint-plugin": "^8.73.0",
+    "@typescript-eslint/parser": "^8.73.0",
+    "@wdio/cli": "^10.2.0",
+    "@wdio/globals": "^10.2.0",
+    "@wdio/local-runner": "^10.2.0",
+    "@wdio/mocha-framework": "^10.2.0",
     "builtin-modules": "^3.3.0",
-    "esbuild": "^0.25.5",
-    "jsdom": "^28.1.0",
-    "mocha": "^11.7.6",
-    "obsidian": "^1.8.7",
+    "esbuild": "^0.28.2",
+    "jsdom": "^31.0.1",
+    "mocha": "^12.0.3",
+    "obsidian": "^1.14.4",
     "tslib": "^2.8.1",
     "typescript": "^5.8.3",
-    "vitest": "^4.0.18",
-    "wdio-obsidian-reporter": "^3.1.1",
-    "wdio-obsidian-service": "^3.1.1"
+    "vitest": "^5.1.1",
+    "wdio-obsidian-reporter": "^3.5.0",
+    "wdio-obsidian-service": "^3.5.0"
+  },
+  "overrides": {
+    "proxy-agent": "^8.0.3",
+    "pac-proxy-agent": "^9.1.1",
+    "get-uri": "^8.0.2",
+    "basic-ftp": "^6.2.6",
+    "glob": "^14.0.6",
+    "minimatch": "^11.0.9",
+    "readdir-glob": "^4.0.0"
+  },
+  "engines": {
+    "node": ">=22.23.4"
   }
 }

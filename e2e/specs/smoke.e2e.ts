@@ -19,7 +19,7 @@ describe("Private AI plugin in real Obsidian (spike)", function () {
 
     it("opens the chat view via the plugin command", async function () {
         await browser.executeObsidianCommand("private-ai:open-local-llm-chat");
-        const view = browser.$('[data-type="local-llm-chat-view"]');
+        const view = browser.$('.workspace-leaf-content[data-type="local-llm-chat-view"]');
         await expect(view).toExist();
     });
 

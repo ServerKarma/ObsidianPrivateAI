@@ -158,7 +158,7 @@ describe("Private AI agent in real Obsidian", function () {
                     }
                 }, width);
                 await browser.waitUntil(async () => !resized || (await browser.execute(() => window.innerWidth)) === width, { timeout: 5000 });
-                await browser.$(".local-llm-exclusion-setting").waitForExist({ timeout: 5000 });
+                await browser.waitUntil(async () => (await browser.$$(".local-llm-exclusion-setting").length) === 2, { timeout: 5000 });
                 return browser.execute(() => [...document.querySelectorAll(".local-llm-exclusion-setting")].map((row) => {
                     const r = row.getBoundingClientRect();
                     const t = row.querySelector("textarea")!.getBoundingClientRect();
