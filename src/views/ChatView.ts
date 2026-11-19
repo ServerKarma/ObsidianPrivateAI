@@ -59,9 +59,8 @@ interface ObsidianApp {
 	};
 }
 
-const WELCOME_GREETING = `What's on your mind?`;
-/** Shown while the local server is being checked, so opening the pane never waits on the network. */
-const WELCOME_CHECKING = 'Checking your local AI server…';
+/** The hint in the empty message box. A working server gets no greeting message in the chat itself. */
+const INPUT_PLACEHOLDER = `What's on your mind?`;
 
 export class ChatView extends ItemView {
 	private messages: ChatMessage[] = [];
@@ -159,7 +158,7 @@ export class ChatView extends ItemView {
 
 		// Create input element
 		this.inputElement = this.inputContainer.createEl('textarea', {
-			placeholder: 'Ask a question...',
+			attr: { placeholder: INPUT_PLACEHOLDER },
 			cls: 'local-llm-input'
 		});
 
@@ -967,11 +966,11 @@ export class ChatView extends ItemView {
 
 						// Check again; the instructions change if the problem did (e.g. server now up, but no model).
 						const welcomeText = await ChatView.getWelcomeMessage(this.llmService);
-						const connected = welcomeText === WELCOME_GREETING;
+						const connected = welcomeText === null;
 						const welcomeMessage = this.messages.find(m => m.id === 'welcome');
 						if (welcomeMessage && welcomeMessage.content !== welcomeText) {
 							this.welcomeCheck++;
-							await this.replaceWelcome(welcomeText);
+							await this.setWelcome(welcomeText);
 						} else if (!connected) {
 							refreshButton.textContent = '🔄 Test connection';
 							refreshButton.disabled = false;
@@ -1171,12 +1170,14 @@ export class ChatView extends ItemView {
 	welcomeReady: Promise<void> = Promise.resolve();
 	private welcomeCheck = 0;
 
-	/** Shows a placeholder first message at once, then fills it in when the server has been checked. */
+	/**
+	 * Checks the server in the background. The chat starts empty; a first message appears
+	 * only when there is something the user has to do (start LM Studio, download a model).
+	 */
 	private async showWelcome(): Promise<void> {
 		const check = ++this.welcomeCheck;
-		await this.addMessage({ id: 'welcome', role: 'assistant', content: WELCOME_CHECKING, timestamp: new Date() });
 		this.welcomeReady = (async () => {
-			let text: string;
+			let text: string | null;
 			try {
 				text = await ChatView.getWelcomeMessage(this.llmService);
 			} catch (error) {
@@ -1185,39 +1186,53 @@ export class ChatView extends ItemView {
 			}
 			// A newer chat or check has replaced this one.
 			if (check !== this.welcomeCheck) return;
-			await this.replaceWelcome(text);
+			await this.setWelcome(text);
 		})();
 	}
 
-	/** Swaps the welcome message's text in place, leaving any later messages where they are. */
-	private async replaceWelcome(text: string): Promise<void> {
-		const message = this.messages.find(m => m.id === 'welcome');
-		if (!message || message.content === text) return;
-		message.content = text;
+	/**
+	 * Shows `text` as the first message, above anything already in the chat, or removes
+	 * that message when there is nothing to say (null).
+	 */
+	private async setWelcome(text: string | null): Promise<void> {
+		let message = this.messages.find(m => m.id === 'welcome');
 		const previous = this.messageContainer.querySelector('[data-message-id="welcome"]');
+		if (text === null) {
+			this.messages = this.messages.filter(m => m.id !== 'welcome');
+			previous?.remove();
+			return;
+		}
+		if (message?.content === text) return;
+		if (message) {
+			message.content = text;
+		} else {
+			message = { id: 'welcome', role: 'assistant', content: text, timestamp: new Date() };
+			this.messages.unshift(message);
+		}
 		await this.renderMessage(message);
 		const rendered = this.messageContainer.querySelectorAll('[data-message-id="welcome"]');
 		const fresh = rendered[rendered.length - 1];
-		if (previous && fresh && previous !== fresh) previous.replaceWith(fresh);
+		if (previous && previous !== fresh) previous.remove();
+		if (fresh) this.messageContainer.prepend(fresh);
 	}
 
 	/**
-	 * The first message in a chat: a greeting when the server is usable, otherwise what to do
-	 * (start LM Studio, or download a model).
+	 * What to tell the user before they start: nothing (null) when the server is usable,
+	 * otherwise what to do (start LM Studio, or download a model).
 	 */
-	private static async getWelcomeMessage(llmService: LLMService): Promise<string> {
+	private static async getWelcomeMessage(llmService: LLMService): Promise<string | null> {
 		let status: ServerStatus | undefined;
 		try {
 			status = await llmService.getServerStatus?.();
 		} catch (error) {
 			LoggingUtility.warn('Could not check the LLM server:', error);
 		}
-		if (status?.state === 'ready') return WELCOME_GREETING;
+		if (status?.state === 'ready') return null;
 		if (status?.state === 'no-models') return welcomeNoModelsMessage();
 		if (status?.state === 'offline') return setupInstructions();
 
 		// A server that can't list its models: find out by asking it something.
 		const testResult = await llmService.testConnection();
-		return testResult.success ? WELCOME_GREETING : setupInstructions();
+		return testResult.success ? null : setupInstructions();
 	}
 }

@@ -1,5 +1,5 @@
 import { browser, expect } from "@wdio/globals";
-import { askAndWait, errorDialogText, newChatWelcome, processOneImage, useServer, waitForNotice } from "../support/chat";
+import { askAndWait, errorDialogText, inputPlaceholder, newChatWelcome, processOneImage, useServer, waitForNotice } from "../support/chat";
 import { chatModels, isRunning, LiveModel, LMSTUDIO_CHAT_ENDPOINT, LMSTUDIO_URL, loadedChatModels, loadOnly, restore, unloadAll } from "../support/lmStudio";
 
 /**
@@ -54,8 +54,10 @@ describe("Private AI with a real LM Studio", function () {
         await useServer(LMSTUDIO_CHAT_ENDPOINT);
     });
 
-    it("greets the user when LM Studio is running with a model downloaded", async function () {
-        expect(await newChatWelcome()).toBe("What's on your mind?");
+    it("starts with an empty chat when LM Studio is running with a model downloaded", async function () {
+        // No instructions and no greeting bubble: the chat starts empty with a hint in the message box.
+        expect(await newChatWelcome()).toBe("");
+        expect(await inputPlaceholder()).toBe("What's on your mind?");
         expect(await errorDialogText()).toBe("");
     });
 

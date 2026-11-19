@@ -1,7 +1,7 @@
 import * as net from "node:net";
 import { browser, expect } from "@wdio/globals";
 import { FakeLmStudio, startFakeLmStudio } from "../support/fakeLmStudio";
-import { askAndWait, errorDialogText, newChatWelcome, processOneImage, useServer, waitForNotice } from "../support/chat";
+import { askAndWait, errorDialogText, inputPlaceholder, newChatWelcome, processOneImage, useServer, waitForNotice } from "../support/chat";
 
 /**
  * What the user sees when the local server can't do what was asked. These use a
@@ -110,11 +110,10 @@ describe("Private AI when the server or model can't be used", function () {
             await browser.executeObsidianCommand("private-ai:open-local-llm-chat");
             const input = browser.$('[data-type="local-llm-chat-view"] textarea.local-llm-input');
             await input.waitForExist({ timeout: 3000 });
-            const firstMessage = await browser.execute(() =>
-                (document.querySelector('[data-type="local-llm-chat-view"] .local-llm-message-content')?.textContent ?? "").trim());
-            // The pane is there well before the server check could have timed out.
+            const messages = await browser.execute(() => document.querySelectorAll('[data-type="local-llm-chat-view"] .local-llm-message').length);
+            // The pane is there well before the server check could have timed out, with nothing in it yet.
             expect(Date.now() - started).toBeLessThan(3000);
-            expect(firstMessage).toContain("Checking your local AI server");
+            expect(messages).toBe(0);
 
             // Obsidian still does other work while the check is pending.
             const opened = await browser.executeObsidian(async ({ app }) => {
@@ -133,7 +132,7 @@ describe("Private AI when the server or model can't be used", function () {
             await browser.waitUntil(async () => (await browser.execute(() =>
                 document.querySelector('[data-type="local-llm-chat-view"] .local-llm-message-content')?.textContent ?? "")).includes("Welcome to Private AI"), {
                 timeout: 15000,
-                timeoutMsg: "the placeholder was never replaced",
+                timeoutMsg: "the setup instructions never appeared",
             });
         });
 
@@ -218,6 +217,11 @@ describe("Private AI when the server or model can't be used", function () {
             expect(notice).toContain("acme/text-only-4b");
             expect(notice).toContain("Gemma 4 E4B");
             expect(server.requests.length).toBe(0);
+        });
+
+        it("starts a chat with no greeting message, only a hint in the message box", async function () {
+            expect(await newChatWelcome()).toBe("");
+            expect(await inputPlaceholder()).toBe("What's on your mind?");
         });
 
         it("still chats with that model, since it can use tools", async function () {

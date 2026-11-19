@@ -11,11 +11,19 @@ export async function useServer(apiEndpoint: string, model = ""): Promise<void> 
     }, apiEndpoint, model);
     await browser.executeObsidianCommand("private-ai:open-local-llm-chat");
     await browser.$(`${CHAT} textarea.local-llm-input`).waitForExist({ timeout: 10000 });
-    // A pane that was just opened is still checking the server for its first message.
-    await browser.waitUntil(async () => browser.execute((chat) => document.querySelectorAll(`${chat} .local-llm-message`).length > 0, CHAT), {
-        timeout: 20000,
-        timeoutMsg: "the chat pane never showed its first message",
+    await serverChecked();
+}
+
+/** Waits until the chat pane has finished checking the server (it does that in the background). */
+export async function serverChecked(): Promise<void> {
+    await browser.executeObsidian(async ({ app }) => {
+        for (const leaf of app.workspace.getLeavesOfType("local-llm-chat-view")) await (leaf.view as any).welcomeReady;
     });
+}
+
+/** The hint shown in the empty message box. */
+export async function inputPlaceholder(): Promise<string> {
+    return (await browser.$(`${CHAT} textarea.local-llm-input`).getAttribute("placeholder")) ?? "";
 }
 
 export async function ask(question: string): Promise<void> {
@@ -30,21 +38,19 @@ export async function lastAssistantText(): Promise<string> {
     }, CHAT);
 }
 
-/** Starts a new chat and returns its first (welcome) message. */
+/**
+ * Starts a new chat and returns the instructions it opens with, or "" when the chat
+ * starts empty (which it does when the server is ready to use).
+ */
 export async function newChatWelcome(): Promise<string> {
     // Clicked from inside the page: a notice from an earlier step may be covering the button.
     await browser.execute((chat) => (document.querySelector(`${chat} .local-llm-new-chat-button`) as HTMLElement).click(), CHAT);
-    let text = "";
-    await browser.waitUntil(async () => {
-        text = await browser.execute((chat) => {
-            const messages = document.querySelectorAll(`${chat} .local-llm-message`);
-            if (messages.length !== 1) return "";
-            return (messages[0].querySelector(".local-llm-message-content")?.textContent ?? "").trim();
-        }, CHAT);
-        // The pane first shows a placeholder while it checks the server.
-        return text.length > 0 && !text.startsWith("Checking your local AI server");
-    }, { timeout: 20000, timeoutMsg: "the new chat never showed a welcome message" });
-    return text;
+    await serverChecked();
+    return browser.execute((chat) => {
+        const messages = document.querySelectorAll(`${chat} .local-llm-message`);
+        if (messages.length > 1) throw new Error(`a new chat should start with at most one message, found ${messages.length}`);
+        return (messages[0]?.querySelector(".local-llm-message-content")?.textContent ?? "").trim();
+    }, CHAT);
 }
 
 /** Sends a question and waits until the turn is over (the Send button is back), then returns the reply. */

@@ -67,7 +67,7 @@ async function flushRenderTicks(iterations: number = 2): Promise<void> {
 }
 
 describe('Obsidian chat smoke test', () => {
-  it('opens at once with a placeholder while the server check is still running', async () => {
+  it('opens at once, with an empty chat, while the server check is still running', async () => {
     let answer: (result: { success: boolean }) => void = () => undefined;
     llmMock.testConnection.mockReturnValue(new Promise((resolve) => { answer = resolve; }));
 
@@ -75,7 +75,7 @@ describe('Obsidian chat smoke test', () => {
     // Resolves although the server has not answered: Obsidian's startup waits on this.
     await view.onOpen();
     const text = () => view.containerEl.querySelector('.local-llm-message-content')?.textContent ?? '';
-    expect(text()).toContain('Checking your local AI server');
+    expect(view.containerEl.querySelectorAll('.local-llm-message').length).toBe(0);
     expect(view.containerEl.querySelector('textarea.local-llm-input')).not.toBeNull();
 
     answer({ success: false });
@@ -107,7 +107,10 @@ describe('Obsidian chat smoke test', () => {
     // Settings on the left, New chat on the right.
     const buttons = [...view.containerEl.querySelectorAll('.local-llm-header-buttons > button')].map((b) => b.className);
     expect(buttons).toEqual(['local-llm-settings-button', 'local-llm-new-chat-button']);
-    expect(content).toContain("What's on your mind?");
+    // A working server gets no greeting bubble; the hint lives in the message box.
+    expect(content).not.toContain("What's on your mind?");
+    expect(view.containerEl.querySelectorAll('.local-llm-message').length).toBe(0);
+    expect(view.containerEl.querySelector('textarea.local-llm-input')?.getAttribute('placeholder')).toBe("What's on your mind?");
   });
 
   it('sends a prompt and streams assistant response', async () => {
