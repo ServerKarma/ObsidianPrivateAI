@@ -12,8 +12,18 @@ describe("Private AI agent in real Obsidian", function () {
 
     before(async function () {
         llm = await startFakeLmStudio((body) => {
-            const question = lastUserText(body);
+            const userText = lastUserText(body);
+            // Each turn starts with the [Obsidian workspace] block; the question follows it.
+            const question = userText.split("User question: ").pop() ?? userText;
             const results = toolResults(body);
+            if (/summarize this note/i.test(question)) {
+                if (results.length === 0) {
+                    const active = userText.match(/Active note: (.+?)(?:\\n|\n)/)?.[1]?.trim() ?? "(none)";
+                    return { toolCalls: [{ name: "read_note", args: { path: active } }] };
+                }
+                const firstHeading = results[0].match(/^# (.+)$/m)?.[1] ?? "nothing";
+                return { text: `This note is about: ${firstHeading}.` };
+            }
             if (/water heater/i.test(question)) {
                 if (results.length === 0) return { toolCalls: [{ name: "search_notes", args: { query: "water heater replaced" } }] };
                 if (results.length === 1) {
@@ -36,7 +46,7 @@ describe("Private AI agent in real Obsidian", function () {
 
         await browser.executeObsidian(async ({ app }, url) => {
             const plugin = (app as any).plugins.plugins["private-ai"];
-            Object.assign(plugin.settings, { apiEndpoint: url, model: "mock-model", contextMode: "search", allowNoteChanges: true });
+            Object.assign(plugin.settings, { apiEndpoint: url, model: "mock-model", allowNoteChanges: true });
             await plugin.saveSettings();
         }, llm.url);
         await browser.executeObsidianCommand("private-ai:open-local-llm-chat");
@@ -75,7 +85,8 @@ describe("Private AI agent in real Obsidian", function () {
         expect(agentRequest.tools.map((t: any) => t.function.name)).toContain("grep_notes");
         const usedNotes = await browser.execute(() =>
             document.querySelector('[data-type="local-llm-chat-view"] .local-llm-used-notes')?.textContent ?? "");
-        expect(usedNotes).toContain("Used 1 note");
+        expect(usedNotes).toContain("Read 1 note");
+        expect(usedNotes).not.toContain("relevant");
     });
 
     async function answerConfirmation(button: "allow" | "deny"): Promise<string> {
@@ -142,6 +153,35 @@ describe("Private AI agent in real Obsidian", function () {
             await plugin.saveSettings();
         });
         await expect(fetch(`http://127.0.0.1:${port}/mcp`, { method: "POST" })).rejects.toThrow();
+    });
+
+    it("reads the note the user has open when they ask about \"this note\"", async function () {
+        // Open a note in the main area, then type in the chat pane (the chat has focus).
+        await browser.executeObsidian(async ({ app }) => {
+            const file = app.vault.getFileByPath("Home/Dishwasher Repair.md");
+            if (!file) throw new Error("fixture note missing");
+            await app.workspace.getLeaf("tab").openFile(file);
+        });
+        await browser.$('[data-type="local-llm-chat-view"] textarea.local-llm-input').click();
+        const before = llm.requests.length;
+        await ask("Summarize this note");
+        await browser.waitUntil(async () => (await lastAssistantText()).includes("This note is about"), {
+            timeout: 20000,
+            timeoutMsg: "the agent never answered about the open note",
+        }).catch(async (e) => {
+            throw new Error(`${e.message}. Last reply: "${await lastAssistantText()}"`);
+        });
+        const first = llm.requests.slice(before).find((r) => r.stream && r.tools);
+        const sent = lastUserText(first);
+        expect(sent).toContain("[Obsidian workspace]");
+        expect(sent).toContain("Active note: Home/Dishwasher Repair.md");
+        expect(await lastAssistantText()).not.toContain("nothing");
+        // No context picker or indexing status in the chat any more.
+        const leftovers = await browser.execute(() => ({
+            picker: !!document.querySelector('[data-type="local-llm-chat-view"] .local-llm-context-mode-container'),
+            status: !!document.querySelector('[data-type="local-llm-chat-view"] .local-llm-rag-status-area'),
+        }));
+        expect(leftovers).toEqual({ picker: false, status: false });
     });
 
     it("deletes the old embedding index files from disk", async function () {

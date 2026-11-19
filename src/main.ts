@@ -10,12 +10,6 @@ import manifest from '../manifest.json';
 
 export const CHAT_VIEW_TYPE = 'local-llm-chat-view';
 
-export enum ContextMode {
-	OPEN_NOTES = 'open-notes',
-	SEARCH = 'search',
-	NONE = 'none'
-}
-
 export interface LocalLLMSettings {
 	apiEndpoint: string;
 	maxTokens: number;
@@ -26,7 +20,6 @@ export interface LocalLLMSettings {
 	model?: string;
 	// API key (optional) - if specified, used as a Bearer token (works with LM Studio)
 	apiKey?: string;
-	contextMode: ContextMode;
 	enableDeveloperLogging: boolean;
 	// Agent (Pi harness) settings
 	allowNoteChanges: boolean;
@@ -54,14 +47,13 @@ export interface LocalLLMSettings {
 const LEGACY_DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant with access to the user's Obsidian vault. When provided with context from their notes, use that information to provide more accurate and relevant responses. Reference specific notes when appropriate, but focus on answering the user's question clearly and concisely.";
 
 /** Settings from the removed embedding/vector-store pipeline, dropped from data.json on load. */
-const REMOVED_SETTINGS = ['searchMaxResults', 'searchContextPercentage', 'searchThreshold', 'enableRAG', 'ragThreshold', 'ragMaxResults', 'embeddingEndpoint', 'embeddingModel'];
+const REMOVED_SETTINGS = ['searchMaxResults', 'searchContextPercentage', 'searchThreshold', 'enableRAG', 'ragThreshold', 'ragMaxResults', 'embeddingEndpoint', 'embeddingModel', 'contextMode'];
 
 export const DEFAULT_SETTINGS: LocalLLMSettings = {
 	apiEndpoint: 'http://localhost:1234/v1/chat/completions',
 	maxTokens: 10000,
 	temperature: 0.7,
 	systemPrompt: '',
-	contextMode: ContextMode.OPEN_NOTES,
 	enableDeveloperLogging: false,
 	allowNoteChanges: true,
 	maxToolRounds: 8,
@@ -245,7 +237,7 @@ export default class LocalLLMPlugin extends Plugin {
 				return;
 			}
 			const result = await this.agentRuntime.processImages(extractor, (done, total, path) => {
-				this.notifyChatViewsOfIndexProgress(done, total, path);
+				LoggingUtility.log(`Reading image text ${done}/${total}: ${path}`);
 			}, controller.signal);
 			if (!background || result.processed > 0) {
 				new Notice(`Private AI read text from ${result.processed} image${result.processed === 1 ? '' : 's'}${result.failed ? ` (${result.failed} had no text)` : ''}.`);
@@ -255,7 +247,6 @@ export default class LocalLLMPlugin extends Plugin {
 			if (!background) new Notice(`Image processing failed: ${error?.message ?? error}`);
 		} finally {
 			this.imageProcessing = null;
-			this.notifyChatViewsOfIndexProgress(1, 1, '');
 		}
 	}
 
@@ -310,9 +301,6 @@ export default class LocalLLMPlugin extends Plugin {
 				new Notice(`Private AI: could not start the MCP server on port ${this.settings.mcpServerPort}. ${error?.message ?? ''}`);
 			}
 		}
-
-		// Notify all open chat views about the settings change
-		this.notifyChatViewsOfSettingsChange();
 	}
 
 	private startUsageTracking() {
@@ -413,30 +401,6 @@ export default class LocalLLMPlugin extends Plugin {
 		this.reviewPromptPending = false;
 	}
 
-	notifyChatViewsOfSettingsChange() {
-		// Get all open chat view leaves
-		this.app.workspace.iterateAllLeaves(leaf => {
-			// Check if the view is actually a ChatView instance (not a DeferredView)
-			// In Obsidian v1.7.2+, views start as DeferredView until they become visible
-			if (leaf.view instanceof ChatView) {
-				leaf.view.updateContextModeFromSettings();
-			}
-		});
-	}
-
-	/**
-	 * Notify all chat views about image text extraction progress
-	 */
-	notifyChatViewsOfIndexProgress(current: number, total: number, message: string) {
-		const leaves = this.app.workspace.getLeavesOfType(CHAT_VIEW_TYPE);
-		leaves.forEach(leaf => {
-			const chatView = leaf.view as ChatView;
-			if (chatView && typeof chatView.showIndexProgress === 'function') {
-				chatView.showIndexProgress(current, total, message);
-			}
-		});
-	}
-
 	private notifyChatViewsOfReviewPrompt(): boolean {
 		const leaves = this.app.workspace.getLeavesOfType(CHAT_VIEW_TYPE);
 		let injected = false;
@@ -518,20 +482,6 @@ class LocalLLMSettingTab extends PluginSettingTab {
 				slider.sliderEl.parentElement?.appendChild(valueLabel);
 			});
 		};
-
-		// Add context mode setting
-		new Setting(containerEl)
-			.setName('Default context mode')
-			.setDesc('The default context mode to use when opening a new chat')
-			.addDropdown(dropdown => dropdown
-				.addOption(ContextMode.OPEN_NOTES, 'Open Tabs')
-				.addOption(ContextMode.SEARCH, 'All Notes')
-				.addOption(ContextMode.NONE, 'No Context')
-				.setValue(this.plugin.settings.contextMode)
-				.onChange(async (value) => {
-					this.plugin.settings.contextMode = value as ContextMode;
-					await this.plugin.saveSettings();
-				}));
 
 		new Setting(containerEl)
 			.setName('API endpoint')

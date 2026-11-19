@@ -12,11 +12,6 @@ const agentMock = {
 };
 
 vi.mock('../src/main', () => ({
-  ContextMode: {
-    OPEN_NOTES: 'open-notes',
-    SEARCH: 'search',
-    NONE: 'none'
-  },
   default: class {}
 }));
 
@@ -36,10 +31,9 @@ function createPluginStub() {
       temperature: 0.7,
       systemPrompt: 'Be concise',
       model: undefined,
-      contextMode: 'none',
       contextNotesVisible: false
     },
-    agentRuntime: { search: { notes: () => [] }, imageCache: { count: 0 } },
+    agentRuntime: { workspaceContext: () => '[Obsidian workspace]\nActive note: (none)' },
     createChatAgent: () => agentMock,
     saveSettings: vi.fn(async () => undefined)
   };

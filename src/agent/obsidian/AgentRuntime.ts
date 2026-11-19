@@ -5,7 +5,7 @@ import type { AgentTool } from '@mariozechner/pi-agent-core';
 import { ObsidianVaultAdapter } from './ObsidianVaultAdapter';
 import { ImageTextCache, ImageTextSource } from './ImageTextCache';
 import { VaultSearch } from '../search/VaultSearch';
-import { createVaultTools, VaultToolDefinition } from '../tools/vaultTools';
+import { createVaultTools, describeWorkspace, VaultToolDefinition } from '../tools/vaultTools';
 import { createModalConfirm } from './ConfirmChangeModal';
 import { createVaultMcpServer } from '../mcp/vaultMcpServer';
 import { connectInProcess } from '../mcp/inProcessClient';
@@ -108,6 +108,11 @@ export class AgentRuntime {
 	}
 
 	/** Warms the BM25 index so the first question doesn't pay for it. */
+	/** The per-turn workspace note: which note is active and which are open (paths only). */
+	workspaceContext(): string {
+		return `[Obsidian workspace]\n${describeWorkspace(this.vault, this.search)}`;
+	}
+
 	warmIndex(): Promise<void> {
 		return this.search.refresh();
 	}

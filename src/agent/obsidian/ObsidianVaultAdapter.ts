@@ -60,7 +60,12 @@ export class ObsidianVaultAdapter implements VaultPort {
 	}
 
 	getActiveNotePath(): string | null {
-		return this.app.workspace.getActiveViewOfType(MarkdownView)?.file?.path ?? null;
+		const focused = this.app.workspace.getActiveViewOfType(MarkdownView);
+		if (focused?.file) return focused.file.path;
+		// While the user types in the chat pane, the chat has focus. The note they are looking at is
+		// the most recently used leaf in the main editor area.
+		const leaf = this.app.workspace.getMostRecentLeaf(this.app.workspace.rootSplit);
+		return leaf?.view instanceof MarkdownView ? leaf.view.file?.path ?? null : null;
 	}
 
 	getOpenNotePaths(): string[] {

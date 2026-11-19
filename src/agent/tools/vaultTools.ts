@@ -81,6 +81,20 @@ function describeFile(f: VaultFileInfo): string {
 	return `${f.path}  (modified ${new Date(f.mtime).toISOString().slice(0, 10)}, ${f.size} bytes)`;
 }
 
+/**
+ * What the user has open in Obsidian: the active note and the other open tabs (paths only,
+ * hidden files left out). Sent with every chat turn and returned by get_open_notes, so the
+ * model can decide whether a question is about the note in front of the user or the vault.
+ */
+export function describeWorkspace(vault: VaultPort, search: VaultSearch): string {
+	const rawActive = vault.getActiveNotePath?.() ?? null;
+	const active = rawActive && search.isVisible(rawActive) ? rawActive : null;
+	const others = (vault.getOpenNotePaths?.() ?? []).filter((p) => p !== active && search.isVisible(p));
+	const lines = [`Active note: ${active ?? '(none)'}`];
+	lines.push(others.length ? `Other open notes:\n${others.map((p) => `- ${p}`).join('\n')}` : 'Other open notes: (none)');
+	return lines.join('\n');
+}
+
 export function createVaultTools(ctx: VaultToolContext): VaultToolDefinition[] {
 	const { vault, search, confirm } = ctx;
 
@@ -196,11 +210,7 @@ export function createVaultTools(ctx: VaultToolContext): VaultToolDefinition[] {
 			inputSchema: schema({}),
 			readOnly: true,
 			async run() {
-				const active = vault.getActiveNotePath?.() ?? null;
-				const open = (vault.getOpenNotePaths?.() ?? []).filter((p) => search.isVisible(p));
-				const lines = [`Active note: ${active && search.isVisible(active) ? active : '(none)'}`];
-				lines.push(open.length ? `Open notes:\n${open.map((p) => `- ${p}`).join('\n')}` : 'Open notes: (none)');
-				return lines.join('\n');
+				return describeWorkspace(vault, search);
 			},
 		},
 		{
