@@ -1,6 +1,7 @@
 import { BM25Index, BM25Hit } from './BM25Index';
 import { VaultPort, VaultFileInfo, isMarkdown, isImage } from '../vault/VaultPort';
 import { ExclusionRules, isExcluded } from '../vault/exclusions';
+import { extractTags, hasAllTags } from './tags';
 
 /** Supplies searchable text for non-markdown files (e.g. vision OCR of images). */
 export interface ExtraTextProvider {
@@ -11,6 +12,8 @@ export interface GrepOptions {
 	regex?: boolean;
 	caseSensitive?: boolean;
 	pathPrefix?: string;
+	/** Only notes that carry every one of these tags (nested tags count). */
+	tags?: string[];
 	limit?: number;
 	contextLines?: number;
 }
@@ -35,6 +38,8 @@ const MAX_GREP_LINE = 300;
 export class VaultSearch {
 	private index = new BM25Index();
 	private kinds = new Map<string, 'note' | 'image'>();
+	/** Tags of each indexed note, refreshed together with the index. */
+	private tags = new Map<string, string[]>();
 	private refreshing: Promise<void> | null = null;
 
 	constructor(
@@ -77,6 +82,7 @@ export class VaultSearch {
 					const body = await this.vault.read(file.path);
 					this.index.upsert({ path: file.path, title: file.basename, body, mtime: file.mtime });
 					this.kinds.set(file.path, 'note');
+					this.tags.set(file.path, extractTags(body));
 				} catch {
 					// Unreadable file: leave it out of the index.
 				}
@@ -95,14 +101,46 @@ export class VaultSearch {
 			if (!seen.has(path)) {
 				this.index.remove(path);
 				this.kinds.delete(path);
+				this.tags.delete(path);
 			}
 		}
 	}
 
-	async search(query: string, limit = 8, pathPrefix?: string): Promise<SearchHit[]> {
+	/** Tags of a visible note (lowercase, no "#"), as of the last refresh. */
+	tagsOf(path: string): string[] {
+		return this.tags.get(path) ?? [];
+	}
+
+	/** True when the note carries every wanted tag; no tags wanted means every note matches. */
+	private matchesTags(path: string, wanted: string[] | undefined): boolean {
+		return !wanted || wanted.length === 0 || hasAllTags(this.tagsOf(path), wanted);
+	}
+
+	/** Every tag in the visible notes with how many notes use it, most used first. */
+	async tagCounts(): Promise<Array<{ tag: string; count: number }>> {
+		await this.refresh();
+		const counts = new Map<string, number>();
+		for (const tags of this.tags.values()) for (const t of tags) counts.set(t, (counts.get(t) ?? 0) + 1);
+		return [...counts.entries()]
+			.map(([tag, count]) => ({ tag, count }))
+			.sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag));
+	}
+
+	/** Visible notes that carry every wanted tag. */
+	async notesWithTags(wanted: string[]): Promise<VaultFileInfo[]> {
+		await this.refresh();
+		return this.notes().filter((f) => this.matchesTags(f.path, wanted));
+	}
+
+	async search(query: string, limit = 8, pathPrefix?: string, tags?: string[]): Promise<SearchHit[]> {
 		await this.refresh();
 		const prefix = pathPrefix ? pathPrefix.replace(/^\/+|\/+$/g, '') + '/' : '';
-		const hits = this.index.search(query, limit, prefix ? (p) => p.startsWith(prefix) : undefined);
+		const wanted = tags && tags.length > 0 ? tags : undefined;
+		const filter =
+			prefix || wanted
+				? (p: string) => (!prefix || p.startsWith(prefix)) && (!wanted || (this.kinds.get(p) === 'note' && this.matchesTags(p, wanted)))
+				: undefined;
+		const hits = this.index.search(query, limit, filter);
 		return hits.map((h) => ({ ...h, kind: this.kinds.get(h.path) ?? 'note' }));
 	}
 
@@ -117,7 +155,7 @@ export class VaultSearch {
 		}
 		const prefix = opts.pathPrefix ? opts.pathPrefix.replace(/^\/+|\/+$/g, '') + '/' : '';
 		const matches: GrepMatch[] = [];
-		const files = this.notes()
+		const files = (opts.tags && opts.tags.length > 0 ? await this.notesWithTags(opts.tags) : this.notes())
 			.filter((f) => !prefix || f.path.startsWith(prefix))
 			.sort((a, b) => b.mtime - a.mtime);
 		for (const file of files) {
