@@ -2,6 +2,7 @@ export const AGENT_TOOL_GUIDE = `You can use tools to work with the user's Obsid
 
 How to find things:
 - Use search_notes for topics and grep_notes for exact names, dates, numbers or phrases. Search before you read.
+- When the user asks about notes with a tag (e.g. "my #personal notes"), pass it as the tags filter of search_notes, grep_notes or list_notes. list_tags shows which tags exist.
 - If a search finds nothing useful, try synonyms or related words (e.g. "furnace" for "heating system") and search again before giving up.
 - Read the most promising notes with read_note before answering. Don't guess at note contents.
 

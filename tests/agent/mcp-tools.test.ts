@@ -111,7 +111,7 @@ describe('built-in MCP server', () => {
 		await setup();
 		const { tools } = await client!.listTools();
 		expect(tools.map((t) => t.name)).toEqual([
-			'search_notes', 'grep_notes', 'list_notes', 'get_open_notes', 'read_note',
+			'search_notes', 'grep_notes', 'list_notes', 'list_tags', 'get_open_notes', 'read_note',
 			'create_note', 'edit_note', 'append_to_note', 'move_note', 'delete_note',
 		]);
 		const search = tools.find((t) => t.name === 'search_notes')!;
@@ -147,6 +147,21 @@ describe('built-in MCP server', () => {
 		expect((await call('read_note', { path: 'Private/Diary.md' })).isError).toBe(true);
 		expect((await call('read_note', { path: '../outside.md' })).text).toMatch(/inside the vault/);
 		expect((await call('list_notes', { folder: 'Home' })).text.split('\n')).toHaveLength(2);
+	});
+
+	it('filters by tag and lists tags', async () => {
+		const { vault, call } = await setup();
+		vault.set('Home/Garden.md', '---\ntags: [personal, home/outdoor]\n---\nWater the garden beds.');
+		vault.set('Private/Tagged.md', '#personal water secret');
+		const found = await call('search_notes', { query: 'water', tags: '#personal' });
+		expect(found.text.split('\n')[0]).toContain('Home/Garden.md');
+		expect(found.text).not.toContain('Water Heater');
+		expect(found.text).not.toContain('Private/');
+		expect((await call('grep_notes', { pattern: 'water', tags: 'home' })).text).toBe('Home/Garden.md:4: Water the garden beds.');
+		expect((await call('list_notes', { tags: 'personal' })).text).toMatch(/^Home\/Garden.md /);
+		expect((await call('list_notes', { tags: 'nope' })).text).toBe('No notes tagged #nope.');
+		expect((await call('search_notes', { query: 'water', tags: 'nope' })).text).toMatch(/^No matching notes tagged #nope/);
+		expect((await call('list_tags')).text).toBe('#home/outdoor (1 note)\n#personal (1 note)');
 	});
 
 	it('pages long notes', async () => {
