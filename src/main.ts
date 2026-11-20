@@ -6,6 +6,7 @@ import { ChatAgentError, PiChatAgent } from './agent/pi/PiChatAgent';
 import { imagesUnavailableMessage, noModelsMessage, noToolSupportMessage, noVisionMessage, serverOfflineMessage } from './services/modelGuidance';
 import { ImageTextExtractor } from './services/ImageTextExtractor';
 import { CleanupResult, removeLegacyEmbeddingFiles } from './services/LegacyEmbeddingCleanup';
+import { ChatHistory } from './services/ChatHistory';
 import '../styles.css';
 import manifest from '../manifest.json';
 
@@ -31,6 +32,8 @@ export interface LocalLLMSettings {
 	// Files the agent can't see
 	excludedFolders: string[];
 	excludedFilePatterns: string[];
+	// Keep chats in the plugin folder so they can be reopened from the History list
+	saveChatHistory: boolean;
 	// Context notes visibility setting
 	contextNotesVisible: boolean;
 	// Review prompt tracking
@@ -59,6 +62,7 @@ export const DEFAULT_SETTINGS: LocalLLMSettings = {
 	enableImageTextExtraction: true,
 	excludedFolders: [],
 	excludedFilePatterns: [],
+	saveChatHistory: true,
 	contextNotesVisible: false,
 	usageTimeMs: 0,
 	lastUsageStartTimestamp: null,
@@ -73,6 +77,8 @@ const REVIEW_PROMPT_MESSAGE = 'Enjoying Private AI? A quick review helps others 
 
 export default class LocalLLMPlugin extends Plugin {
 	settings: LocalLLMSettings;
+	/** Saved chats, in the plugin's own folder (never in the notes). */
+	chatHistory: ChatHistory;
 	agentRuntime: AgentRuntime;
 	private llmService: any; // LLMService instance for image processing
 	private imageProcessing: AbortController | null = null;
@@ -98,6 +104,11 @@ export default class LocalLLMPlugin extends Plugin {
 			systemPrompt: this.settings.systemPrompt,
 			model: this.settings.model
 		});
+
+		this.chatHistory = new ChatHistory(
+			this.app.vault.adapter,
+			`${this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`}/chats`
+		);
 
 		// Agent runtime: BM25/grep search, vault tools and the built-in MCP server
 		this.agentRuntime = new AgentRuntime({
@@ -641,6 +652,42 @@ class LocalLLMSettingTab extends PluginSettingTab {
 				}
 			}
 		);
+
+		new Setting(containerEl).setName('Chat history').setHeading();
+
+		new Setting(containerEl)
+			.setName('Save chats')
+			.setDesc('Keep your chats so you can reopen them from the History button in the chat pane. They are stored in this plugin\'s folder, not in your notes, and the newest 100 are kept.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.saveChatHistory)
+				.onChange(async (value) => {
+					this.plugin.settings.saveChatHistory = value;
+					await this.plugin.saveSettings();
+				}));
+
+		let armed = false;
+		new Setting(containerEl)
+			.setName('Delete saved chats')
+			.setDesc('Removes every saved chat. This can\'t be undone.')
+			.addButton(button => button
+				.setButtonText('Delete all')
+				.setWarning()
+				.onClick(async () => {
+					// Two clicks, so one stray click can't wipe the history.
+					if (!armed) {
+						armed = true;
+						button.setButtonText('Click again to delete');
+						window.setTimeout(() => {
+							armed = false;
+							button.setButtonText('Delete all');
+						}, 4000);
+						return;
+					}
+					armed = false;
+					button.setButtonText('Delete all');
+					const removed = await this.plugin.chatHistory.clear();
+					new Notice(removed === 0 ? 'No saved chats to delete.' : `Deleted ${removed} saved chat${removed === 1 ? '' : 's'}.`);
+				}));
 
 		new Setting(containerEl).setName('Files the AI can\'t see').setHeading();
 

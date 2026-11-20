@@ -109,6 +109,24 @@ describe('PiChatAgent (Pi harness over the built-in MCP server)', () => {
 		expect(agent.messages).toHaveLength(0);
 	});
 
+	it('continues a restored (saved) conversation, which survives a JSON round trip', async () => {
+		const first = makeAgent();
+		faux.setResponses([fauxAssistantMessage(fauxText('Hi Gabe.'))]);
+		await first.send('My name is Gabe', () => undefined);
+		const saved = JSON.parse(JSON.stringify(first.messages));
+
+		const resumed = makeAgent();
+		resumed.restore(saved);
+		let seen = '';
+		faux.setResponses([(context) => {
+			seen = JSON.stringify(context.messages);
+			return fauxAssistantMessage(fauxText('Your name is Gabe.'));
+		}]);
+		await resumed.send('What is my name?', () => undefined);
+		expect(seen).toContain('My name is Gabe');
+		expect(resumed.messages).toHaveLength(4);
+	});
+
 	it('runs without tools when asked (context mode "None")', async () => {
 		let toolCount = -1;
 		faux.setResponses([(context) => {
