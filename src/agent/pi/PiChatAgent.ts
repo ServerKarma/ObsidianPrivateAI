@@ -130,6 +130,12 @@ export class PiChatAgent {
 		this.history = [];
 	}
 
+	/** Continues a saved chat: the next turn sees these messages as the conversation so far. */
+	restore(messages: readonly AgentMessage[]): void {
+		this.reset();
+		this.history = [...messages];
+	}
+
 	async send(userText: string, onEvent: (e: ChatAgentEvent) => void, signal?: AbortSignal, options: ChatTurnOptions = {}): Promise<string> {
 		const settings = this.deps.settings();
 		const modelId = (await this.deps.resolveModelId?.()) || settings.model?.trim() || '';
