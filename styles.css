@@ -1006,3 +1006,61 @@
 	background: var(--background-secondary);
 	font-size: var(--font-ui-small);
 }
+
+/* "/" prompt template menu, shown above the chat box */
+.local-llm-input-container {
+	position: relative;
+}
+
+.local-llm-template-menu {
+	position: absolute;
+	left: 10px;
+	right: 10px;
+	bottom: 100%;
+	max-height: 240px;
+	overflow-y: auto;
+	margin-bottom: 4px;
+	padding: 4px;
+	background-color: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	box-shadow: var(--shadow-s);
+	z-index: 20;
+}
+
+.local-llm-template-menu-hidden {
+	display: none;
+}
+
+.local-llm-template-item {
+	padding: 6px 8px;
+	border-radius: 4px;
+	cursor: pointer;
+}
+
+.local-llm-template-item.is-selected,
+.local-llm-template-item:hover {
+	background-color: var(--background-modifier-hover);
+}
+
+.local-llm-template-name {
+	font-weight: var(--font-semibold);
+	color: var(--text-normal);
+}
+
+.local-llm-template-preview {
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.local-llm-template-setting .setting-item-control {
+	flex-wrap: wrap;
+}
+
+.local-llm-template-textarea {
+	width: 100%;
+	min-width: 240px;
+}
