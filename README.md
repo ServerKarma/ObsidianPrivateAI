@@ -1,5 +1,9 @@
 # Private AI Chat for Obsidian
 
+[![Latest release](https://img.shields.io/github/v/release/ServerKarma/ObsidianPrivateAI?label=release)](https://github.com/ServerKarma/ObsidianPrivateAI/releases/latest)
+[![Build](https://github.com/ServerKarma/ObsidianPrivateAI/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/ServerKarma/ObsidianPrivateAI/actions/workflows/build.yml)
+[![Tests](https://github.com/ServerKarma/ObsidianPrivateAI/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/ServerKarma/ObsidianPrivateAI/actions/workflows/test.yml)
+
 Your most sensitive notes, your private thoughts — other AI plugins send them to someone's servers. Private AI doesn't.
 
 * ✅ Your notes stay on your device
