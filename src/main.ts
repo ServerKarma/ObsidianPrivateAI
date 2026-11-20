@@ -6,6 +6,7 @@ import { ChatAgentError, PiChatAgent } from './agent/pi/PiChatAgent';
 import { imagesUnavailableMessage, noModelsMessage, noToolSupportMessage, noVisionMessage, serverOfflineMessage } from './services/modelGuidance';
 import { ImageTextExtractor } from './services/ImageTextExtractor';
 import { CleanupResult, removeLegacyEmbeddingFiles } from './services/LegacyEmbeddingCleanup';
+import { PromptTemplate } from './views/promptTemplates';
 import '../styles.css';
 import manifest from '../manifest.json';
 
@@ -31,6 +32,8 @@ export interface LocalLLMSettings {
 	// Files the agent can't see
 	excludedFolders: string[];
 	excludedFilePatterns: string[];
+	// Saved prompts offered by typing "/" in the chat box
+	promptTemplates: PromptTemplate[];
 	// Context notes visibility setting
 	contextNotesVisible: boolean;
 	// Review prompt tracking
@@ -59,6 +62,7 @@ export const DEFAULT_SETTINGS: LocalLLMSettings = {
 	enableImageTextExtraction: true,
 	excludedFolders: [],
 	excludedFilePatterns: [],
+	promptTemplates: [],
 	contextNotesVisible: false,
 	usageTimeMs: 0,
 	lastUsageStartTimestamp: null,
@@ -182,6 +186,12 @@ export default class LocalLLMPlugin extends Plugin {
 			changed = true;
 		}
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
+		// Own copy, so editing templates never changes the shared default array.
+		this.settings.promptTemplates = Array.isArray(data.promptTemplates)
+			? data.promptTemplates
+				.filter((t: unknown): t is PromptTemplate => !!t && typeof (t as PromptTemplate).name === 'string' && typeof (t as PromptTemplate).prompt === 'string')
+				.map((t: PromptTemplate) => ({ name: t.name, prompt: t.prompt }))
+			: [];
 		if (changed) {
 			await this.saveData(this.settings);
 		}
@@ -642,6 +652,8 @@ class LocalLLMSettingTab extends PluginSettingTab {
 			}
 		);
 
+		this.displayPromptTemplates(containerEl);
+
 		new Setting(containerEl).setName('Files the AI can\'t see').setHeading();
 
 		const excludedFoldersSetting = new Setting(containerEl)
@@ -859,6 +871,55 @@ class LocalLLMSettingTab extends PluginSettingTab {
 			// Show notice to user
 			new Notice('Failed to load models from LM Studio. Please check your API endpoint and ensure LM Studio is running.');
 		}
+	}
+
+	/** Saved prompts the chat box offers when you type "/". */
+	private displayPromptTemplates(containerEl: HTMLElement): void {
+		new Setting(containerEl).setName('Prompt templates').setHeading();
+		new Setting(containerEl)
+			.setDesc('Type / in the chat box to pick one of these. The template\'s text goes in the message box, where you can edit it before sending.');
+
+		const templates = this.plugin.settings.promptTemplates;
+		templates.forEach((template, index) => {
+			const setting = new Setting(containerEl)
+				.addText(text => text
+					.setPlaceholder('Name, e.g. summarize')
+					.setValue(template.name)
+					.onChange(async (value) => {
+						// Names are typed after "/", so they can't hold spaces.
+						template.name = value.trim().replace(/\s+/g, '-');
+						await this.plugin.saveSettings();
+					}))
+				.addTextArea(text => text
+					.setPlaceholder('Summarize this note in five bullet points.')
+					.setValue(template.prompt)
+					.then((text) => {
+						text.inputEl.rows = 3;
+						text.inputEl.addClass('local-llm-template-textarea');
+					})
+					.onChange(async (value) => {
+						template.prompt = value;
+						await this.plugin.saveSettings();
+					}))
+				.addExtraButton(button => button
+					.setIcon('trash')
+					.setTooltip('Delete template')
+					.onClick(async () => {
+						templates.splice(index, 1);
+						await this.plugin.saveSettings();
+						this.display();
+					}));
+			setting.settingEl.addClass('local-llm-template-setting');
+		});
+
+		new Setting(containerEl)
+			.addButton(button => button
+				.setButtonText('Add template')
+				.onClick(async () => {
+					templates.push({ name: '', prompt: '' });
+					await this.plugin.saveSettings();
+					this.display();
+				}));
 	}
 
 	private parseMultilineList(value: string): string[] {
