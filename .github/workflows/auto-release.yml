@@ -3,7 +3,8 @@ name: Auto release
 # Every push to main becomes a published release marked as latest, so Obsidian
 # and BRAT users get it without a manual step. If the manifest version is already
 # released, the patch number is bumped and committed back to main first.
-# A commit that `npm run release` already tagged is left to release.yml.
+# A commit that `npm run release` already tagged is released under that tag.
+# A version that already has a release is never published twice.
 
 on:
   push:
@@ -30,7 +31,17 @@ jobs:
 
       - name: Pick the release version
         id: version
-        run: node .github/scripts/release-version.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node .github/scripts/release-version.mjs
+          version=$(grep '^version=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2)
+          if gh release view "$version" >/dev/null 2>&1; then
+            echo "Release $version already exists; nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Setup Node.js
         if: steps.version.outputs.skip != 'true'
@@ -67,9 +78,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
+          TAGGED: ${{ steps.version.outputs.tagged }}
         run: |
-          git tag "${VERSION}"
-          git push origin "refs/tags/${VERSION}"
+          if [ "${TAGGED}" != "true" ]; then
+            git tag "${VERSION}"
+            git push origin "refs/tags/${VERSION}"
+          fi
           gh release create "${VERSION}" \
             --title="${VERSION}" \
             --generate-notes \

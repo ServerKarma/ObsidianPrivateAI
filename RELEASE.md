@@ -8,4 +8,4 @@ Releases are automatic. Every push to `main` runs the **Auto release** workflow 
 
 ### Manual release (optional)
 
-`npm run release` still works: it bumps the version, tags it and pushes `main` and the tag. The Auto release workflow skips a commit that is already tagged, and `release.yml` creates a **draft** release for the tag, which you publish from the [Releases page](https://github.com/gabosgab/ObsidianPrivateAI/releases).
+`npm run release` still works: it bumps the version, tags it and pushes `main` and the tag. The Auto release workflow sees the commit is already tagged and publishes that version as is, without another bump. A version that already has a release is never published twice.

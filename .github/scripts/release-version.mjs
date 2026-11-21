@@ -1,12 +1,12 @@
 // Picks the version for the automatic release of a push to main (.github/workflows/auto-release.yml).
 //
 // - If this commit is already tagged with the manifest version (a manual `npm run release`),
-//   there is nothing to do: skip=true.
+//   release that tag as is: tagged=true.
 // - If the manifest version is not tagged yet (someone bumped it by hand), release it as is.
 // - Otherwise bump the patch number until it is free, and write it to manifest.json and
 //   package.json the same way version-bump.mjs does: bumped=true.
 //
-// Writes version, bumped and skip to $GITHUB_OUTPUT (or prints them when run locally).
+// Writes version, bumped and tagged to $GITHUB_OUTPUT (or prints them when run locally).
 // Needs the repository's tags: check out with fetch-depth 0.
 import fs from 'fs';
 import path from 'path';
@@ -27,10 +27,10 @@ if (!/^\d+\.\d+\.\d+$/.test(current)) {
 
 let version = current;
 let bumped = false;
-let skip = false;
+let tagged = false;
 
 if (tagsHere.has(current)) {
-	skip = true;
+	tagged = true;
 } else if (tags.has(current)) {
 	const [major, minor, patch] = current.split('.').map(Number);
 	let next = patch + 1;
@@ -46,6 +46,6 @@ if (tagsHere.has(current)) {
 	fs.writeFileSync(packagePath, JSON.stringify(packageJson, null, 2));
 }
 
-const lines = [`version=${version}`, `bumped=${bumped}`, `skip=${skip}`];
+const lines = [`version=${version}`, `bumped=${bumped}`, `tagged=${tagged}`];
 if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, lines.join('\n') + '\n');
 console.log(lines.join('\n'));
