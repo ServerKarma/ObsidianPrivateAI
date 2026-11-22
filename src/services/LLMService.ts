@@ -270,10 +270,11 @@ export class LLMService {
 
 			const request: ChatRequest = {
 				messages,
-				max_tokens: this.config.maxTokens || 1000,
-				temperature: this.config.temperature || 0.7,
 				stream: false
 			};
+			// Reply length and sampling are left to the model's settings on the server unless set here.
+			if (this.config.maxTokens) request.max_tokens = this.config.maxTokens;
+			if (this.config.temperature !== undefined) request.temperature = this.config.temperature;
 
 			// Add model to request if specified
 			if (this.config.model) {
@@ -328,10 +329,11 @@ export class LLMService {
 
 			const request: ChatRequest = {
 				messages,
-				max_tokens: this.config.maxTokens || 1000,
-				temperature: this.config.temperature || 0.7,
 				stream: false
 			};
+			// Reply length and sampling are left to the model's settings on the server unless set here.
+			if (this.config.maxTokens) request.max_tokens = this.config.maxTokens;
+			if (this.config.temperature !== undefined) request.temperature = this.config.temperature;
 
 			if (this.config.model) {
 				request.model = this.config.model;

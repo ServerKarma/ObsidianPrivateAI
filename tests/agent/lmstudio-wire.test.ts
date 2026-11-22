@@ -70,8 +70,8 @@ describe('Pi agent against an OpenAI-compatible local server', () => {
 		];
 
 		const settings: PiChatSettings = {
-			apiEndpoint: endpoint, apiKey: 'sk-lm', model: 'qwen3-8b', maxTokens: 512,
-			temperature: 0.3, systemPrompt: '', maxToolRounds: 5,
+			apiEndpoint: endpoint, apiKey: 'sk-lm', model: 'qwen3-8b',
+			systemPrompt: '', maxToolRounds: 5,
 		};
 		const thinking: string[] = [];
 		const agent = new PiChatAgent({ settings: () => settings, loadTools: () => loadMcpTools(client) });
@@ -86,7 +86,11 @@ describe('Pi agent against an OpenAI-compatible local server', () => {
 		const first = requests[0];
 		expect(first.url).toBe('/v1/chat/completions');
 		expect(first.auth).toBe('Bearer sk-lm');
-		expect(first.body).toMatchObject({ model: 'qwen3-8b', stream: true, temperature: 0.3, max_tokens: 512 });
+		expect(first.body).toMatchObject({ model: 'qwen3-8b', stream: true });
+		// Reply length and sampling are left to the model's settings in LM Studio.
+		expect(first.body).not.toHaveProperty('max_tokens');
+		expect(first.body).not.toHaveProperty('max_completion_tokens');
+		expect(first.body).not.toHaveProperty('temperature');
 		expect(first.body.messages[0].role).toBe('system');
 		expect(first.body.tools.map((t: any) => t.function.name)).toContain('grep_notes');
 
@@ -112,7 +116,7 @@ describe('Pi agent against an OpenAI-compatible local server', () => {
 		];
 		const thinking: string[] = [];
 		const agent = new PiChatAgent({
-			settings: () => ({ apiEndpoint: endpoint, model: 'gemma4:e4b', maxTokens: 512, temperature: 0.7, systemPrompt: '', maxToolRounds: 5 }),
+			settings: () => ({ apiEndpoint: endpoint, model: 'gemma4:e4b', systemPrompt: '', maxToolRounds: 5 }),
 			loadTools: () => loadMcpTools(client),
 		});
 		const answer = await agent.send('When was the furnace serviced?', (e) => {
@@ -121,6 +125,8 @@ describe('Pi agent against an OpenAI-compatible local server', () => {
 		expect(answer).toBe('On 2025-10-02.');
 		expect(thinking.join('')).toBe('Look it up.');
 		expect(requests[0].body.model).toBe('gemma4:e4b');
+		expect(requests[0].body).not.toHaveProperty('max_tokens');
+		expect(requests[0].body).not.toHaveProperty('temperature');
 		const toolMsg = requests[1].body.messages.find((m: any) => m.role === 'tool');
 		expect(toolMsg).toMatchObject({ tool_call_id: 'call_ab12' });
 		expect(JSON.stringify(toolMsg.content)).toContain('Home/HVAC Tune-up.md:1');
@@ -131,7 +137,7 @@ describe('Pi agent against an OpenAI-compatible local server', () => {
 		server = http.createServer();
 		await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
 		const agent = new PiChatAgent({
-			settings: () => ({ apiEndpoint: 'http://127.0.0.1:1/v1/chat/completions', model: 'm', maxTokens: 10, temperature: 0, systemPrompt: '', maxToolRounds: 1 }),
+			settings: () => ({ apiEndpoint: 'http://127.0.0.1:1/v1/chat/completions', model: 'm', systemPrompt: '', maxToolRounds: 1 }),
 			loadTools: async () => [],
 		});
 		await expect(agent.send('hi', () => undefined)).rejects.toThrow();

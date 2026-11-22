@@ -114,22 +114,40 @@ describe("Private AI with Ollama and other local servers", function () {
         // llama2 is smaller but can't use tools; the embedding model isn't a chat model.
         expect(ollama.requests[0].model).toBe("gemma4:e2b");
         expect(ollama.requests[0].tools.map((t: any) => t.function.name)).toContain("grep_notes");
-        // Not loaded yet, so Ollama's smallest default context (4096) is assumed and the reply gets half.
-        expect(ollama.requests[0].max_tokens).toBe(2048);
+        // Reply length and sampling are left to the model's settings in Ollama.
+        expect(ollama.requests[0]).not.toHaveProperty("max_tokens");
+        expect(ollama.requests[0]).not.toHaveProperty("temperature");
         expect(toolResults(ollama.requests[1]).join("\n")).toContain("Home/Water Heater Replacement.md");
     });
 
     it("uses the context Ollama loaded the model with, and warns when it is small", async function () {
-        ollama!.load("gemma4:e2b", 4096);
+        const userTexts = (body: any): string[] => body.messages.filter((m: any) => m.role === "user").map((m: any) => JSON.stringify(m.content));
+        const long = `Background for later: ${"the boiler hums in the basement. ".repeat(400)}`; // about 13,000 characters
+        const usersInLastRequest = () => userTexts(ollama!.requests[ollama!.requests.length - 1]);
+
+        // 64k loaded: the long message stays in the history.
+        ollama!.load("gemma4:e2b", 65536);
+        // Typed in one go: setValue would send 13,000 key presses.
+        await browser.execute((chat, text) => {
+            const input = document.querySelector(`${chat} textarea.local-llm-input`) as HTMLTextAreaElement;
+            input.value = text;
+            input.dispatchEvent(new Event("input", { bubbles: true }));
+            (document.querySelector(`${chat} .local-llm-send-button`) as HTMLElement).click();
+        }, CHAT, long);
+        await browser.waitUntil(() => ollama!.requests.some((r) => userTexts(r).some((t) => t.includes("boiler hums"))), { timeout: 15000, timeoutMsg: "the long message was not sent" });
+        await browser.waitUntil(async () => browser.execute((chat) => {
+            const send = document.querySelector(`${chat} .local-llm-send-button`) as HTMLButtonElement | null;
+            return !!send && !send.disabled && !document.querySelector(`${chat} .local-llm-stop-button-visible`);
+        }, CHAT), { timeout: 30000, timeoutMsg: "the long message got no reply" });
         ollama!.requests.length = 0;
         await askAndWait("When did I replace the water heater?");
-        expect(await waitForNotice(/4,096-token context/)).toContain("Context length in the Ollama app");
+        expect(usersInLastRequest().some((t) => t.includes("boiler hums"))).toBe(true);
 
-        ollama!.load("gemma4:e2b", 65536);
+        // 4k loaded: the same history no longer fits, so the long message is dropped, and the user is told why.
+        ollama!.load("gemma4:e2b", 4096);
         ollama!.requests.length = 0;
         await askAndWait("And what did it cost?");
-        // A 40,000-token reply cap would not fit 4k; with 64k loaded, the user's cap applies.
-        const maxTokens = await browser.executeObsidian(({ app }) => (app as any).plugins.plugins["private-ai"].settings.maxTokens as number);
-        expect(ollama!.requests[0].max_tokens).toBe(Math.min(maxTokens, 32768));
+        expect(usersInLastRequest().some((t) => t.includes("boiler hums"))).toBe(false);
+        expect(await waitForNotice(/4,096-token context/)).toContain("Context length in the Ollama app");
     });
 });

@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { fauxAssistantMessage, fauxText, fauxThinking, fauxToolCall, registerFauxProvider, FauxProviderRegistration } from '@mariozechner/pi-ai';
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { PiChatAgent, PiChatSettings, ChatAgentEvent, baseUrlFromEndpoint, buildLocalModel, pruneToBudget, replyTokenLimit, FALLBACK_CONTEXT_WINDOW } from '../../src/agent/pi/PiChatAgent';
+import { PiChatAgent, PiChatSettings, ChatAgentEvent, baseUrlFromEndpoint, buildLocalModel, pruneToBudget, FALLBACK_CONTEXT_WINDOW } from '../../src/agent/pi/PiChatAgent';
 import { loadMcpTools } from '../../src/agent/pi/mcpTools';
 import { createVaultTools, ChangeRequest } from '../../src/agent/tools/vaultTools';
 import { createVaultMcpServer } from '../../src/agent/mcp/vaultMcpServer';
@@ -12,8 +12,6 @@ import { InMemoryVault } from '../mocks/InMemoryVault';
 
 const SETTINGS: PiChatSettings = {
 	apiEndpoint: 'http://localhost:1234/v1/chat/completions',
-	maxTokens: 1000,
-	temperature: 0.2,
 	systemPrompt: 'Keep answers short.',
 	maxToolRounds: 3,
 };
@@ -220,19 +218,16 @@ describe('local model config', () => {
 		expect(model.compat).toMatchObject({ supportsDeveloperRole: false, supportsStore: false, maxTokensField: 'max_tokens' });
 	});
 
-	it('uses the context window LM Studio reports and keeps the reply cap inside it', () => {
-		expect(buildLocalModel(SETTINGS, 'm', 32768)).toMatchObject({ contextWindow: 32768, maxTokens: 1000 });
-		expect(buildLocalModel({ ...SETTINGS, maxTokens: 40000 }, 'm', 32768)).toMatchObject({ contextWindow: 32768, maxTokens: 16384 });
+	it('uses the context window LM Studio reports and leaves the reply length to the model', () => {
+		expect(buildLocalModel(SETTINGS, 'm', 32768)).toMatchObject({ contextWindow: 32768, maxTokens: 0 });
 		expect(buildLocalModel(SETTINGS, 'm')).toMatchObject({ contextWindow: FALLBACK_CONTEXT_WINDOW });
-		expect(replyTokenLimit(40000, 4096)).toBe(2048);
-		expect(replyTokenLimit(500, 4096)).toBe(500);
 	});
 
-	it('passes the reported context window to the model and caps the reply sent', async () => {
+	it('passes the reported context window to the model and sends no reply cap or temperature', async () => {
 		const seen: number[] = [];
-		const sent: Array<number | undefined> = [];
+		const sent: Array<{ maxTokens?: number; temperature?: number } | undefined> = [];
 		const agent = new PiChatAgent({
-			settings: () => ({ ...SETTINGS, maxTokens: 40000 }),
+			settings: () => SETTINGS,
 			loadTools: async () => [],
 			resolveModel: async () => ({ id: 'loaded-model', contextWindow: 8192 }),
 			buildModel: (_s, _id, contextWindow) => {
@@ -240,13 +235,13 @@ describe('local model config', () => {
 				return faux.getModel();
 			},
 		});
-		faux.setResponses([(_ctx: unknown, opts?: { maxTokens?: number }) => {
-			sent.push(opts?.maxTokens);
+		faux.setResponses([(_ctx: unknown, opts?: { maxTokens?: number; temperature?: number }) => {
+			sent.push(opts);
 			return fauxAssistantMessage(fauxText('ok'));
 		}]);
 		await agent.send('hi', () => undefined);
 		expect(seen).toEqual([8192]);
-		expect(sent).toEqual([4096]);
+		expect(sent[0]?.temperature).toBeUndefined();
 	});
 
 	it('prunes whole old exchanges to fit the context budget', () => {

@@ -47,8 +47,6 @@ interface ThinkingPanelElements {
 interface LLMConfig {
 	apiEndpoint: string;
 	serverType?: ServerType;
-	maxTokens: number;
-	temperature: number;
 	systemPrompt?: string;
 	model?: string;
 	apiKey?: string;
@@ -202,8 +200,6 @@ export class ChatView extends ItemView {
 		this.llmService = createLLMService({
 			apiEndpoint: settings.apiEndpoint,
 			serverType: settings.serverType,
-			maxTokens: settings.maxTokens,
-			temperature: settings.temperature,
 			systemPrompt: settings.systemPrompt,
 			model: settings.model,
 			apiKey: settings.apiKey
@@ -215,8 +211,6 @@ export class ChatView extends ItemView {
 		this.llmService = createLLMService({
 			apiEndpoint: config.apiEndpoint,
 			serverType: config.serverType ?? this.plugin.settings.serverType,
-			maxTokens: config.maxTokens,
-			temperature: config.temperature,
 			systemPrompt: config.systemPrompt,
 			model: config.model,
 			apiKey: config.apiKey
