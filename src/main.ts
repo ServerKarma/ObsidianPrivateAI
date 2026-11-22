@@ -13,8 +13,6 @@ export const CHAT_VIEW_TYPE = 'local-llm-chat-view';
 
 export interface LocalLLMSettings {
 	apiEndpoint: string;
-	maxTokens: number;
-	temperature: number;
 	// User preferences appended to the agent's system prompt
 	systemPrompt: string;
 	// Model setting (optional - if not set, the first loaded chat model is used)
@@ -42,13 +40,11 @@ export interface LocalLLMSettings {
 /** The pre-agent default prompt; replaced with an empty preference on load. */
 const LEGACY_DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant with access to the user's Obsidian vault. When provided with context from their notes, use that information to provide more accurate and relevant responses. Reference specific notes when appropriate, but focus on answering the user's question clearly and concisely.";
 
-/** Settings that no longer exist (the embedding pipeline, the old MCP listener, the manual context window), dropped from data.json on load. */
-const REMOVED_SETTINGS = ['searchMaxResults', 'searchContextPercentage', 'searchThreshold', 'enableRAG', 'ragThreshold', 'ragMaxResults', 'embeddingEndpoint', 'embeddingModel', 'contextMode', 'mcpServerEnabled', 'mcpServerPort', 'mcpServerToken', 'contextWindow'];
+/** Settings that no longer exist (the embedding pipeline, the old MCP listener, and the model parameters LM Studio now decides), dropped from data.json on load. */
+const REMOVED_SETTINGS = ['searchMaxResults', 'searchContextPercentage', 'searchThreshold', 'enableRAG', 'ragThreshold', 'ragMaxResults', 'embeddingEndpoint', 'embeddingModel', 'contextMode', 'mcpServerEnabled', 'mcpServerPort', 'mcpServerToken', 'contextWindow', 'maxTokens', 'temperature'];
 
 export const DEFAULT_SETTINGS: LocalLLMSettings = {
 	apiEndpoint: 'http://localhost:1234/v1/chat/completions',
-	maxTokens: 10000,
-	temperature: 0.7,
 	systemPrompt: '',
 	enableDeveloperLogging: false,
 	// Read-only until the user turns this on (the agent asks the first time it wants to change a note)
@@ -91,8 +87,6 @@ export default class LocalLLMPlugin extends Plugin {
 		this.llmService = createLLMService({
 			apiEndpoint: this.settings.apiEndpoint,
 			apiKey: this.settings.apiKey,
-			maxTokens: this.settings.maxTokens,
-			temperature: this.settings.temperature,
 			systemPrompt: this.settings.systemPrompt,
 			model: this.settings.model
 		});
@@ -192,8 +186,6 @@ export default class LocalLLMPlugin extends Plugin {
 				apiEndpoint: this.settings.apiEndpoint,
 				apiKey: this.settings.apiKey,
 				model: this.settings.model,
-				maxTokens: this.settings.maxTokens,
-				temperature: this.settings.temperature,
 				systemPrompt: this.settings.systemPrompt,
 				maxToolRounds: this.settings.maxToolRounds
 			}),
@@ -245,8 +237,6 @@ export default class LocalLLMPlugin extends Plugin {
 			}
 			const extractor = new ImageTextExtractor(createLLMService({
 				...connection,
-				maxTokens: this.settings.maxTokens,
-				temperature: this.settings.temperature,
 				systemPrompt: this.settings.systemPrompt
 			}), this.app);
 			// Servers that don't report capabilities are asked to describe a test image instead.
@@ -309,8 +299,6 @@ export default class LocalLLMPlugin extends Plugin {
 			this.llmService = createLLMService({
 				apiEndpoint: this.settings.apiEndpoint,
 				apiKey: this.settings.apiKey,
-				maxTokens: this.settings.maxTokens,
-				temperature: this.settings.temperature,
 				systemPrompt: this.settings.systemPrompt,
 				model: this.settings.model
 			});
@@ -556,33 +544,6 @@ class LocalLLMSettingTab extends PluginSettingTab {
 			this.loadAvailableModels();
 		}, 0);
 
-		addStyledSlider(
-			new Setting(containerEl)
-				.setName('Max tokens')
-				.setDesc('Longest reply the AI may write, in tokens. The context window is read from LM Studio, and a reply never takes more than half of it, so there is always room for your notes and the conversation.'),
-			{
-				min: 100, max: 40000, step: 100, value: this.plugin.settings.maxTokens,
-				onChange: async (value) => {
-					this.plugin.settings.maxTokens = value;
-					await this.plugin.saveSettings();
-				}
-			}
-		);
-
-		addStyledSlider(
-			new Setting(containerEl)
-				.setName('Temperature')
-				.setDesc('Controls randomness in the response (0 = deterministic, 1 = very random) 0.7 is recommended for most models'),
-			{
-				min: 0, max: 1, step: 0.01, value: this.plugin.settings.temperature,
-				onChange: async (value) => {
-					this.plugin.settings.temperature = value;
-					await this.plugin.saveSettings();
-				},
-				format: (v) => v.toFixed(2)
-			}
-		);
-
 		// System prompt setting with textarea below
 		new Setting(containerEl)
 			.setName('What personal preferences should be considered in responses?')
@@ -731,8 +692,6 @@ class LocalLLMSettingTab extends PluginSettingTab {
 				const llmService = createLLMService({
 					apiEndpoint: this.plugin.settings.apiEndpoint,
 					apiKey: this.plugin.settings.apiKey,
-					maxTokens: this.plugin.settings.maxTokens,
-					temperature: this.plugin.settings.temperature,
 					systemPrompt: this.plugin.settings.systemPrompt,
 					model: this.plugin.settings.model
 				});

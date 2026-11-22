@@ -45,8 +45,6 @@ interface ThinkingPanelElements {
 
 interface LLMConfig {
 	apiEndpoint: string;
-	maxTokens: number;
-	temperature: number;
 	systemPrompt?: string;
 	model?: string;
 	apiKey?: string;
@@ -209,8 +207,6 @@ export class ChatView extends ItemView {
 		LoggingUtility.log('Updating LLM service with settings:', settings);
 		this.llmService = createLLMService({
 			apiEndpoint: settings.apiEndpoint,
-			maxTokens: settings.maxTokens,
-			temperature: settings.temperature,
 			systemPrompt: settings.systemPrompt,
 			model: settings.model,
 			apiKey: settings.apiKey
@@ -221,8 +217,6 @@ export class ChatView extends ItemView {
 		LoggingUtility.log('Updating LLM service with config:', config);
 		this.llmService = createLLMService({
 			apiEndpoint: config.apiEndpoint,
-			maxTokens: config.maxTokens,
-			temperature: config.temperature,
 			systemPrompt: config.systemPrompt,
 			model: config.model,
 			apiKey: config.apiKey

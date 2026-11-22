@@ -7,8 +7,6 @@ export interface PiChatSettings {
 	apiEndpoint: string;
 	apiKey?: string;
 	model?: string;
-	maxTokens: number;
-	temperature: number;
 	/** User preferences appended to the system prompt. */
 	systemPrompt: string;
 	/** Max rounds of tool calls before the agent must answer. */
@@ -27,10 +25,8 @@ export interface ResolvedModel {
  */
 export const FALLBACK_CONTEXT_WINDOW = 8192;
 
-/** The reply cap actually sent: the user's max tokens, capped at half the context window so history still fits. */
-export function replyTokenLimit(maxTokens: number, contextWindow: number): number {
-	return Math.max(1, Math.min(maxTokens, Math.floor(contextWindow / 2)));
-}
+/** Share of the context window history may fill; the rest is left for the model's reply. */
+const HISTORY_SHARE = 0.75;
 
 export type ChatAgentEvent =
 	| { type: 'text'; delta: string }
@@ -80,7 +76,8 @@ export function buildLocalModel(settings: PiChatSettings, modelId: string, conte
 		input: ['text'],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow,
-		maxTokens: replyTokenLimit(settings.maxTokens, contextWindow),
+		// 0 = no max_tokens in the request: the model's own settings in LM Studio decide.
+		maxTokens: 0,
 		compat: {
 			supportsStore: false,
 			supportsDeveloperRole: false,
@@ -156,10 +153,9 @@ export class PiChatAgent {
 		const useTools = options.useTools !== false;
 		const tools = useTools ? await this.deps.loadTools() : [];
 		const contextWindow = resolved?.contextWindow ?? FALLBACK_CONTEXT_WINDOW;
-		const replyTokens = replyTokenLimit(settings.maxTokens, contextWindow);
 		const model = (this.deps.buildModel ?? buildLocalModel)(settings, modelId, contextWindow);
-		// What's left after the reply, at roughly 3 characters per token.
-		const budgetChars = Math.max(8000, (contextWindow - replyTokens) * 3);
+		// History gets most of the window, leaving room for the reply, at roughly 3 characters per token.
+		const budgetChars = Math.max(8000, Math.floor(contextWindow * HISTORY_SHARE) * 3);
 
 		let toolRounds = 0;
 		let lastAssistant: unknown = null;
@@ -197,9 +193,6 @@ export class PiChatAgent {
 				? { streamFn: this.deps.streamFn }
 				: {}),
 		});
-		// Temperature and output length are per-request stream options.
-		const baseStream = agent.streamFn;
-		agent.streamFn = (m, ctx, opts) => baseStream(m, ctx, { ...opts, temperature: settings.temperature, maxTokens: replyTokens });
 
 		let answer = '';
 		let textSinceTurnStart = false;

@@ -107,8 +107,6 @@ function createPluginStub(
   const settings = {
     apiEndpoint: 'http://localhost:1234/v1/chat/completions',
     apiKey: '',
-    maxTokens: 2048,
-    temperature: 0.7,
     systemPrompt: 'Be concise',
     model: 'test-model',
     maxToolRounds: 5,
