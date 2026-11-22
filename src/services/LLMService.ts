@@ -1,5 +1,6 @@
 import { LoggingUtility } from '../utils/LoggingUtility';
 import { requestUrl } from 'obsidian';
+import { ServerType, serverProfile } from './localServers';
 
 export interface LLMConfig {
 	apiEndpoint: string;
@@ -8,10 +9,14 @@ export interface LLMConfig {
 	systemPrompt?: string;
 	model?: string;
 	apiKey?: string;
+	/** Which local server this is; decides how models and their context are read. Defaults to LM Studio. */
+	serverType?: ServerType;
 }
 
 // Centralized error message function
-function getLLMErrorMessage(error: Error, endpoint?: string): string {
+function getLLMErrorMessage(error: Error, serverType?: ServerType): string {
+	const name = serverProfile(serverType).name;
+	const isLmStudio = (serverType ?? 'lmstudio') === 'lmstudio';
 	// Check if it's a network/connection error
 	if (error.message.includes('Failed to fetch') ||
 		error.message.includes('NetworkError') ||
@@ -19,9 +24,9 @@ function getLLMErrorMessage(error: Error, endpoint?: string): string {
 		error.message.includes('ERR_CONNECTION_REFUSED') ||
 		error.message.includes('ERR_EMPTY_RESPONSE')) {
 		return `It appears your local LLM server is not running.
-* Check that LM Studio is running and a model is loaded
+* Check that ${name} is running and a model is loaded
 * Check that you started local server
-* Check that Cross-Origin-Resource-Sharing CORS is enabled		
+* Check that Cross-Origin-Resource-Sharing CORS is enabled
 `;
 	}
 
@@ -42,12 +47,14 @@ function getLLMErrorMessage(error: Error, endpoint?: string): string {
 It appears your local LLM server is not running.
 
 ### Troubleshooting Steps
-* Check that LM Studio is running and a model is loaded
-* **In LM Studio, click the Local Server tab on the left hand side:**
+* Check that ${name} is running and a model is loaded
+${isLmStudio ? `* **In LM Studio, click the Local Server tab on the left hand side:**
     * Verify that the server is running
     * Verify that Cross-Origin-Resource-Sharing CORS is enabled
     * Verify that the port number matches that in the settings page of this plugin
-`;
+` : `* Verify that the port number matches the API endpoint in the Private AI settings
+* Verify that the server allows requests from Obsidian (CORS)
+`}`;
 }
 
 export interface ChatMessage {
@@ -108,7 +115,7 @@ export interface LMStudioRestModel {
 	capabilities?: { vision?: boolean; trained_for_tool_use?: boolean } | null;
 }
 
-/** A model the server lists; `loaded` is only known when LM Studio's REST API reports it. */
+/** A model the server lists; `loaded` is only known when the server's own API reports it (LM Studio, Ollama, llama.cpp). */
 interface ListedModel {
 	id: string;
 	/** The model's catalog key, when it differs from a loaded instance's id. */
@@ -118,7 +125,7 @@ interface ListedModel {
 	vision?: boolean;
 	toolUse?: boolean;
 	sizeBytes?: number;
-	/** Context length (tokens) the model is loaded with; only LM Studio's REST API reports it. */
+	/** Context length (tokens) the model is (or will be) loaded with, when the server's own API reports it. */
 	contextLength?: number;
 }
 
@@ -134,9 +141,9 @@ export interface ChatModelInfo {
 
 /**
  * What the local server can do right now:
- * - offline: nothing answers at the endpoint (LM Studio closed or its server stopped)
+ * - offline: nothing answers at the endpoint (the server app is closed or its server stopped)
  * - no-models: it answers, but has no chat model downloaded
- * - unknown: it answers, but can't list its models (not LM Studio or OpenAI-compatible there)
+ * - unknown: it answers, but can't list its models (not an OpenAI-compatible server there)
  * - ready: `model` is the one a request would use
  */
 export type ServerStatus =
@@ -182,6 +189,53 @@ function pickDefaultModel(chatModels: ListedModel[], need: 'tools' | 'vision'): 
 export interface LMStudioRestModelsResponse {
 	models: LMStudioRestModel[];
 }
+
+/** One entry of Ollama's GET /api/tags (downloaded models). */
+interface OllamaTagModel {
+	name?: string;
+	model?: string;
+	size?: number;
+	digest?: string;
+}
+
+/** One entry of Ollama's GET /api/ps (models in memory). */
+interface OllamaRunningModel {
+	name?: string;
+	model?: string;
+	context_length?: number;
+}
+
+/** The parts of Ollama's POST /api/show that matter here. */
+interface OllamaShowResponse {
+	capabilities?: string[];
+	/** Modelfile parameters as text, e.g. "temperature 0.7\nnum_ctx 2048". */
+	parameters?: string;
+}
+
+/**
+ * Ollama's smallest default context (machines with under 24 GB of VRAM). Used for a model
+ * that isn't loaded yet, since the real value depends on the server's settings; once it is
+ * loaded, /api/ps reports what it got.
+ */
+export const OLLAMA_DEFAULT_CONTEXT = 4096;
+
+/** /api/show answers per model version (digest), so it is asked once per model. */
+const ollamaShowCache = new Map<string, OllamaShowResponse>();
+
+/** For tests. */
+export function clearOllamaShowCache(): void {
+	ollamaShowCache.clear();
+}
+
+const positive = (n: unknown): number | undefined => (typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : undefined);
+
+/** The num_ctx a Modelfile sets, if any. */
+export function numCtxFromParameters(parameters: string | undefined): number | undefined {
+	const match = /(?:^|\n)\s*num_ctx\s+(\d+)/.exec(parameters ?? '');
+	return match ? positive(Number(match[1])) : undefined;
+}
+
+type Catalog = { reached: boolean; listed: boolean; models: ListedModel[] };
 
 export class LLMService {
 	private config: LLMConfig;
@@ -323,7 +377,7 @@ export class LLMService {
 			return responseData;
 		} catch (error) {
 			LoggingUtility.error('Fetch error details:', error);
-			throw new Error(getLLMErrorMessage(error, this.config.apiEndpoint));
+			throw new Error(getLLMErrorMessage(error, this.config.serverType));
 		}
 	}
 
@@ -371,7 +425,7 @@ export class LLMService {
 			LoggingUtility.error('Connection test failed:', error);
 			return {
 				success: false,
-				error: getLLMErrorMessage(error, this.config.apiEndpoint)
+				error: getLLMErrorMessage(error, this.config.serverType)
 			};
 		}
 	}
@@ -396,7 +450,7 @@ export class LLMService {
 	}
 
 	/**
-	 * The chat model to use when none is configured: one already loaded in LM Studio if
+	 * The chat model to use when none is configured: one already loaded on the server if
 	 * there is one (so the server is not made to load another), else the smallest one
 	 * that can use tools.
 	 */
@@ -452,24 +506,58 @@ export class LLMService {
 	 * `listed` whether an answer was a model list (possibly empty), so callers can tell a
 	 * stopped server from one with nothing downloaded.
 	 */
-	private async fetchModelCatalog(): Promise<{ reached: boolean; listed: boolean; models: ListedModel[] }> {
-		const headers = this.buildHeaders();
+	private async fetchModelCatalog(): Promise<Catalog> {
+		const type = this.config.serverType ?? 'lmstudio';
+		if (type === 'ollama') {
+			const catalog = await this.fetchOllamaCatalog();
+			// An older Ollama, or something else on its port: fall back to the OpenAI list.
+			if (!catalog.reached || catalog.listed) return catalog;
+		}
+		const root = this.serverRoot();
+		const endpoints = type === 'lmstudio' ? [`${root}/api/v1/models`, `${root}/v1/models`] : [`${root}/v1/models`];
+		const catalog = await this.fetchOpenAICatalog(endpoints, type === 'lmstudio');
+		if (type === 'llamacpp' && catalog.models.length > 0) await this.addLlamaCppProps(catalog.models);
+		return catalog;
+	}
+
+	private async getJson(url: string, init: { method?: 'GET' | 'POST'; body?: unknown } = {}): Promise<{ status: number; json: unknown }> {
+		const response = await withTimeout(requestUrl({
+			url,
+			method: init.method ?? 'GET',
+			headers: this.buildHeaders(),
+			body: init.body === undefined ? undefined : JSON.stringify(init.body),
+			throw: false
+		}), STATUS_TIMEOUT_MS);
+		let json: unknown = null;
+		if (response.status < 400) {
+			try {
+				json = response.json;
+			} catch {
+				json = null;
+			}
+		}
+		return { status: response.status, json };
+	}
+
+	private async fetchOpenAICatalog(endpoints: string[], readLmStudio: boolean): Promise<Catalog> {
 		let reached = false;
 		let listed = false;
 
-		for (const endpoint of this.getModelListEndpoints()) {
+		for (const endpoint of endpoints) {
 			try {
 				LoggingUtility.log('Fetching models from:', endpoint);
-				const response = await withTimeout(requestUrl({ url: endpoint, method: 'GET', headers, throw: false }), STATUS_TIMEOUT_MS);
+				const response = await this.getJson(endpoint);
 				reached = true;
 				if (response.status >= 400) {
 					LoggingUtility.warn(`Failed to fetch models from ${endpoint}: ${response.status}`);
 					continue;
 				}
 				const payload = response.json as Partial<ModelsResponse & LMStudioRestModelsResponse> | null;
-				if (!Array.isArray(payload?.data) && !Array.isArray(payload?.models)) continue;
+				const hasData = Array.isArray(payload?.data);
+				const hasLmStudio = readLmStudio && Array.isArray(payload?.models);
+				if (!hasData && !hasLmStudio) continue;
 				listed = true;
-				const parsed = this.parseModelsResponse(payload);
+				const parsed = this.parseModelsResponse(payload, readLmStudio);
 				if (parsed.length > 0) return { reached, listed, models: parsed };
 			} catch (error) {
 				// An HTTP error still means a server is there; a network error means it isn't.
@@ -483,36 +571,113 @@ export class LLMService {
 		return { reached, listed, models: [] };
 	}
 
-	private getModelListEndpoints(): string[] {
+	/**
+	 * Ollama's native API: /api/tags for what is downloaded (with sizes), /api/ps for what
+	 * is in memory and the context it was loaded with, and /api/show for each model's
+	 * capabilities (tools, vision, embedding).
+	 */
+	private async fetchOllamaCatalog(): Promise<Catalog> {
+		const root = this.serverRoot();
+		let tags: { status: number; json: unknown };
 		try {
-			const parsedUrl = new URL(this.config.apiEndpoint);
-			const pathLower = parsedUrl.pathname.toLowerCase();
+			tags = await this.getJson(`${root}/api/tags`);
+		} catch (error) {
+			LoggingUtility.warn('Failed to fetch models from Ollama /api/tags:', error);
+			const reached = typeof (error as { status?: unknown })?.status === 'number';
+			return { reached, listed: false, models: [] };
+		}
+		const list = (tags.json as { models?: OllamaTagModel[] } | null)?.models;
+		if (tags.status >= 400 || !Array.isArray(list)) return { reached: true, listed: false, models: [] };
 
-			const basePath =
-				pathLower.includes('/v1/')
-					? parsedUrl.pathname.substring(0, pathLower.indexOf('/v1/'))
-					: '';
+		const running = new Map<string, OllamaRunningModel>();
+		try {
+			const ps = await this.getJson(`${root}/api/ps`);
+			const models = (ps.json as { models?: OllamaRunningModel[] } | null)?.models;
+			for (const m of Array.isArray(models) ? models : []) {
+				for (const key of [m?.name, m?.model]) if (key) running.set(key, m);
+			}
+		} catch (error) {
+			LoggingUtility.warn('Failed to read loaded models from Ollama /api/ps:', error);
+		}
 
-			return [
-				`${parsedUrl.origin}${basePath}/api/v1/models`,
-				`${parsedUrl.origin}${basePath}/v1/models`
-			];
-			} catch (error) {
-				LoggingUtility.error('Error parsing URL for model endpoint:', error);
-			const fallbackBase = this.config.apiEndpoint
-				.replace('/chat/completions', '')
-				.replace('/embeddings', '')
-				.replace('/v1/models', '')
-				.replace('/api/v1/models', '');
+		const models = await Promise.all(list
+			.filter((m) => typeof (m?.name ?? m?.model) === 'string' && (m.name ?? m.model ?? '').trim().length > 0)
+			.map(async (m): Promise<ListedModel> => {
+				const id = (m.name ?? m.model) as string;
+				const show = await this.ollamaShow(root, id, m.digest);
+				const caps = Array.isArray(show?.capabilities) ? show.capabilities : undefined;
+				const loaded = running.get(id) ?? (m.model ? running.get(m.model) : undefined);
+				const embeddingOnly = !!caps && caps.includes('embedding') && !caps.includes('completion');
+				return {
+					id,
+					type: embeddingOnly ? 'embedding' : 'llm',
+					loaded: !!loaded,
+					toolUse: caps ? caps.includes('tools') : undefined,
+					vision: caps ? caps.includes('vision') : undefined,
+					sizeBytes: positive(m.size),
+					// Loaded: what it got. Not loaded: its Modelfile's num_ctx, else Ollama's smallest default.
+					contextLength: (loaded ? positive(loaded.context_length) : undefined)
+						?? numCtxFromParameters(show?.parameters) ?? OLLAMA_DEFAULT_CONTEXT
+				};
+			}));
+		return { reached: true, listed: true, models };
+	}
 
-			return [
-				`${fallbackBase}/api/v1/models`,
-				`${fallbackBase}/v1/models`
-			];
+	private async ollamaShow(root: string, model: string, digest?: string): Promise<OllamaShowResponse | undefined> {
+		const key = `${root}|${model}|${digest ?? ''}`;
+		const cached = ollamaShowCache.get(key);
+		if (cached) return cached;
+		try {
+			const response = await this.getJson(`${root}/api/show`, { method: 'POST', body: { model } });
+			if (response.status >= 400 || !response.json || typeof response.json !== 'object') return undefined;
+			const show = response.json as OllamaShowResponse;
+			const value: OllamaShowResponse = { capabilities: show.capabilities, parameters: show.parameters };
+			if (digest) ollamaShowCache.set(key, value);
+			return value;
+		} catch (error) {
+			LoggingUtility.warn(`Failed to read Ollama model details for ${model}:`, error);
+			return undefined;
 		}
 	}
 
-	private parseModelsResponse(payload: unknown): Array<ListedModel> {
+	/** llama-server runs one model, already loaded; /props reports its context size and vision. */
+	private async addLlamaCppProps(models: ListedModel[]): Promise<void> {
+		let props: Record<string, unknown> | null = null;
+		try {
+			const response = await this.getJson(`${this.serverRoot()}/props`);
+			props = response.json as Record<string, unknown> | null;
+		} catch (error) {
+			LoggingUtility.warn('Failed to read llama-server /props:', error);
+		}
+		const settings = (props?.default_generation_settings ?? {}) as { n_ctx?: number };
+		const contextLength = positive(settings.n_ctx) ?? positive(props?.n_ctx);
+		const vision = (props?.modalities as { vision?: unknown } | undefined)?.vision;
+		for (const m of models) {
+			m.loaded = true;
+			m.contextLength = contextLength;
+			if (typeof vision === 'boolean') m.vision = vision;
+		}
+	}
+
+	/** The server's address without the OpenAI path, e.g. http://localhost:11434. */
+	private serverRoot(): string {
+		try {
+			const parsedUrl = new URL(this.config.apiEndpoint);
+			const pathLower = parsedUrl.pathname.toLowerCase();
+			const basePath = pathLower.includes('/v1/') ? parsedUrl.pathname.substring(0, pathLower.indexOf('/v1/')) : '';
+			return `${parsedUrl.origin}${basePath}`;
+		} catch (error) {
+			LoggingUtility.error('Error parsing URL for model endpoint:', error);
+			return this.config.apiEndpoint
+				.replace('/chat/completions', '')
+				.replace('/embeddings', '')
+				.replace('/api/v1/models', '')
+				.replace('/v1/models', '')
+				.replace(/\/v1\/?$/, '');
+		}
+	}
+
+	private parseModelsResponse(payload: unknown, readLmStudio = true): Array<ListedModel> {
 		const modelMap = new Map<string, ListedModel>();
 		const dataPayload = payload as Partial<ModelsResponse>;
 		const lmStudioPayload = payload as Partial<LMStudioRestModelsResponse>;
@@ -526,7 +691,7 @@ export class LLMService {
 				});
 		}
 
-		if (Array.isArray(lmStudioPayload.models)) {
+		if (readLmStudio && Array.isArray(lmStudioPayload.models)) {
 			lmStudioPayload.models
 				.map(model => {
 					const instances = Array.isArray(model?.loaded_instances) ? model.loaded_instances : [];
