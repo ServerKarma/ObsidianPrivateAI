@@ -1,6 +1,6 @@
 {
   "name": "private-ai",
-  "version": "1.0.72",
+  "version": "1.0.73",
   "description": "Chat with your notes using a local AI model. Private by design: your notes never leave your device.",
   "main": "main.js",
   "scripts": {
