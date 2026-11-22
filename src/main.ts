@@ -8,6 +8,8 @@ import { ImageTextExtractor } from './services/ImageTextExtractor';
 import { CleanupResult, removeLegacyEmbeddingFiles } from './services/LegacyEmbeddingCleanup';
 import '../styles.css';
 import manifest from '../manifest.json';
+import { ReviewModal, ReviewModalChoice } from './views/ReviewModal';
+import { GITHUB_REPO_URL, REVIEW_MODAL_DELAY_MS, REVIEW_PAGE_URL, shouldShowReviewPrompt } from './services/reviewPrompt';
 
 export const CHAT_VIEW_TYPE = 'local-llm-chat-view';
 
@@ -38,6 +40,8 @@ export interface LocalLLMSettings {
 	lastUsageStartTimestamp: number | null;
 	lastReviewPromptTimestamp: number | null;
 	reviewLinkClicked: boolean;
+	successfulChats: number;
+	successfulChatsAtLastReviewPrompt: number;
 }
 
 /** The pre-agent default prompt; replaced with an empty preference on load. */
@@ -63,13 +67,11 @@ export const DEFAULT_SETTINGS: LocalLLMSettings = {
 	usageTimeMs: 0,
 	lastUsageStartTimestamp: null,
 	lastReviewPromptTimestamp: null,
-	reviewLinkClicked: false
+	reviewLinkClicked: false,
+	successfulChats: 0,
+	successfulChatsAtLastReviewPrompt: 0
 };
 
-const REVIEW_PROMPT_THRESHOLD_MS = 60 * 60 * 1000;
-const REVIEW_PROMPT_REPEAT_MS = 24 * 60 * 60 * 1000;
-const REVIEW_PAGE_URL = 'https://www.obsidianstats.com/plugins/private-ai';
-const REVIEW_PROMPT_MESSAGE = 'Enjoying Private AI? A quick review helps others discover it';
 
 export default class LocalLLMPlugin extends Plugin {
 	settings: LocalLLMSettings;
@@ -77,7 +79,7 @@ export default class LocalLLMPlugin extends Plugin {
 	private llmService: any; // LLMService instance for image processing
 	private imageProcessing: AbortController | null = null;
 	private usageTrackingIntervalId: number | null = null;
-	private reviewPromptPending = false;
+	private reviewModalOpen = false;
 
 	async onload() {
 		LoggingUtility.initialize();
@@ -326,14 +328,14 @@ export default class LocalLLMPlugin extends Plugin {
 		}
 
 		this.usageTrackingIntervalId = window.setInterval(() => {
-			void this.updateUsageAndMaybeShowReviewPrompt();
+			void this.updateUsage();
 		}, 60 * 1000);
 		this.registerInterval(this.usageTrackingIntervalId);
 
-		void this.updateUsageAndMaybeShowReviewPrompt();
+		void this.updateUsage();
 	}
 
-	private async updateUsageAndMaybeShowReviewPrompt() {
+	private async updateUsage() {
 		const now = Date.now();
 		const lastStart = this.settings.lastUsageStartTimestamp;
 
@@ -343,28 +345,6 @@ export default class LocalLLMPlugin extends Plugin {
 
 		this.settings.lastUsageStartTimestamp = now;
 		await this.saveData(this.settings);
-
-		if (this.shouldShowReviewPrompt(now)) {
-			this.settings.lastReviewPromptTimestamp = now;
-			await this.saveData(this.settings);
-			this.showReviewPromptInChat();
-		}
-	}
-
-	private shouldShowReviewPrompt(now: number): boolean {
-		if (this.settings.reviewLinkClicked) {
-			return false;
-		}
-
-		if (this.settings.usageTimeMs < REVIEW_PROMPT_THRESHOLD_MS) {
-			return false;
-		}
-
-		if (this.settings.lastReviewPromptTimestamp === null) {
-			return true;
-		}
-
-		return now - this.settings.lastReviewPromptTimestamp >= REVIEW_PROMPT_REPEAT_MS;
 	}
 
 	private async flushUsageTracking() {
@@ -379,58 +359,41 @@ export default class LocalLLMPlugin extends Plugin {
 		await this.saveData(this.settings);
 	}
 
-	private showReviewPromptInChat() {
-		const injected = this.notifyChatViewsOfReviewPrompt();
-		if (injected) {
-			return;
-		}
-
-		// Queue for next chat view render and open the chat view for immediate visibility.
-		this.reviewPromptPending = true;
-		void this.activateView().then(() => {
-			const wasInjected = this.notifyChatViewsOfReviewPrompt();
-			if (wasInjected) {
-				this.reviewPromptPending = false;
-			}
-		});
-	}
-
-	openReviewPromptManually() {
-		this.showReviewPromptInChat();
-	}
-
-	async markReviewLinkClicked() {
-		if (this.settings.reviewLinkClicked) {
-			return;
-		}
-
-		this.settings.reviewLinkClicked = true;
-		this.reviewPromptPending = false;
+	/**
+	 * Called by the chat view each time an answer finishes without an error. The review ask is
+	 * tied to these moments so it only ever follows a good experience.
+	 */
+	async recordSuccessfulChat(): Promise<void> {
+		this.settings.successfulChats = (this.settings.successfulChats ?? 0) + 1;
 		await this.saveData(this.settings);
-	}
-
-	consumePendingReviewPrompt(chatView: ChatView) {
-		if (!this.reviewPromptPending) {
+		if (this.reviewModalOpen || !shouldShowReviewPrompt(this.settings, Date.now())) {
 			return;
 		}
-
-		chatView.showReviewPromptBanner(REVIEW_PROMPT_MESSAGE, REVIEW_PAGE_URL);
-		this.reviewPromptPending = false;
+		window.setTimeout(() => this.showReviewModal(), REVIEW_MODAL_DELAY_MS);
 	}
 
-	private notifyChatViewsOfReviewPrompt(): boolean {
-		const leaves = this.app.workspace.getLeavesOfType(CHAT_VIEW_TYPE);
-		let injected = false;
+	/** Opens the review modal now. Also used by the settings button for testing. */
+	showReviewModal(): void {
+		if (this.reviewModalOpen) return;
+		this.reviewModalOpen = true;
+		this.settings.lastReviewPromptTimestamp = Date.now();
+		this.settings.successfulChatsAtLastReviewPrompt = this.settings.successfulChats ?? 0;
+		void this.saveData(this.settings);
+		new ReviewModal(this.app, this.settings.successfulChats ?? 0, (choice) => {
+			this.reviewModalOpen = false;
+			void this.handleReviewChoice(choice);
+		}).open();
+	}
 
-		leaves.forEach(leaf => {
-			const chatView = leaf.view as ChatView;
-			if (chatView && typeof chatView.showReviewPromptBanner === 'function') {
-				chatView.showReviewPromptBanner(REVIEW_PROMPT_MESSAGE, REVIEW_PAGE_URL);
-				injected = true;
-			}
-		});
-
-		return injected;
+	private async handleReviewChoice(choice: ReviewModalChoice): Promise<void> {
+		if (choice === 'later') {
+			// Snoozed: it comes back after more days and more answered chats.
+			return;
+		}
+		if (choice === 'review') window.open(REVIEW_PAGE_URL, '_blank');
+		if (choice === 'star') window.open(GITHUB_REPO_URL, '_blank');
+		this.settings.reviewLinkClicked = true;
+		await this.saveData(this.settings);
 	}
 
 	async activateView() {
@@ -711,12 +674,12 @@ class LocalLLMSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Review prompt')
-			.setDesc('Inject the review prompt into the chat window for testing.')
+			.setDesc('Show the review request now. It also appears on its own after you have used the chat for a while.')
 			.addButton(button => button
 				.setButtonText('Show review prompt')
 				.setCta()
 				.onClick(() => {
-					this.plugin.openReviewPromptManually();
+					this.plugin.showReviewModal();
 				}));
 
 		// Add developer logging setting
