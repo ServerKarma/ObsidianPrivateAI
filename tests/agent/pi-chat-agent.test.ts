@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { fauxAssistantMessage, fauxText, fauxThinking, fauxToolCall, registerFauxProvider, FauxProviderRegistration } from '@mariozechner/pi-ai';
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { PiChatAgent, PiChatSettings, ChatAgentEvent, baseUrlFromEndpoint, buildLocalModel, pruneToBudget } from '../../src/agent/pi/PiChatAgent';
+import { PiChatAgent, PiChatSettings, ChatAgentEvent, baseUrlFromEndpoint, buildLocalModel, pruneToBudget, FALLBACK_CONTEXT_WINDOW } from '../../src/agent/pi/PiChatAgent';
 import { loadMcpTools } from '../../src/agent/pi/mcpTools';
 import { createVaultTools, ChangeRequest } from '../../src/agent/tools/vaultTools';
 import { createVaultMcpServer } from '../../src/agent/mcp/vaultMcpServer';
@@ -12,11 +12,8 @@ import { InMemoryVault } from '../mocks/InMemoryVault';
 
 const SETTINGS: PiChatSettings = {
 	apiEndpoint: 'http://localhost:1234/v1/chat/completions',
-	maxTokens: 1000,
-	temperature: 0.2,
 	systemPrompt: 'Keep answers short.',
 	maxToolRounds: 3,
-	contextWindow: 32768,
 };
 
 let faux: FauxProviderRegistration;
@@ -50,7 +47,7 @@ function makeAgent(overrides: Partial<PiChatSettings> = {}) {
 	return new PiChatAgent({
 		settings: () => ({ ...SETTINGS, ...overrides }),
 		loadTools: () => loadMcpTools(client),
-		resolveModelId: async () => 'loaded-model',
+		resolveModel: async () => ({ id: 'loaded-model' }),
 		buildModel: () => faux.getModel(),
 		now: () => new Date('2026-11-19T12:00:00Z'),
 	});
@@ -198,7 +195,7 @@ describe('PiChatAgent (Pi harness over the built-in MCP server)', () => {
 	});
 
 	it('fails clearly when no model is available', async () => {
-		const agent = new PiChatAgent({ settings: () => SETTINGS, loadTools: async () => [], resolveModelId: async () => undefined });
+		const agent = new PiChatAgent({ settings: () => SETTINGS, loadTools: async () => [], resolveModel: async () => undefined });
 		await expect(agent.send('hi', () => undefined)).rejects.toThrow(/No model is loaded/);
 	});
 
@@ -219,6 +216,32 @@ describe('local model config', () => {
 		const model = buildLocalModel(SETTINGS, 'qwen3-8b');
 		expect(model).toMatchObject({ id: 'qwen3-8b', api: 'openai-completions', baseUrl: 'http://localhost:1234/v1' });
 		expect(model.compat).toMatchObject({ supportsDeveloperRole: false, supportsStore: false, maxTokensField: 'max_tokens' });
+	});
+
+	it('uses the context window LM Studio reports and leaves the reply length to the model', () => {
+		expect(buildLocalModel(SETTINGS, 'm', 32768)).toMatchObject({ contextWindow: 32768, maxTokens: 0 });
+		expect(buildLocalModel(SETTINGS, 'm')).toMatchObject({ contextWindow: FALLBACK_CONTEXT_WINDOW });
+	});
+
+	it('passes the reported context window to the model and sends no reply cap or temperature', async () => {
+		const seen: number[] = [];
+		const sent: Array<{ maxTokens?: number; temperature?: number } | undefined> = [];
+		const agent = new PiChatAgent({
+			settings: () => SETTINGS,
+			loadTools: async () => [],
+			resolveModel: async () => ({ id: 'loaded-model', contextWindow: 8192 }),
+			buildModel: (_s, _id, contextWindow) => {
+				seen.push(contextWindow);
+				return faux.getModel();
+			},
+		});
+		faux.setResponses([(_ctx: unknown, opts?: { maxTokens?: number; temperature?: number }) => {
+			sent.push(opts);
+			return fauxAssistantMessage(fauxText('ok'));
+		}]);
+		await agent.send('hi', () => undefined);
+		expect(seen).toEqual([8192]);
+		expect(sent[0]?.temperature).toBeUndefined();
 	});
 
 	it('prunes whole old exchanges to fit the context budget', () => {

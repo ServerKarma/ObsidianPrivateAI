@@ -166,6 +166,17 @@ describe('LLMService server status', () => {
     expect((await service('not/listed').getServerStatus() as any).model).toEqual({ id: 'not/listed', loaded: false });
   });
 
+  it('reports the context length a loaded model was loaded with', async () => {
+    lmStudio([
+      { type: 'llm', key: 'loaded/model', max_context_length: 262144, capabilities: { vision: false, trained_for_tool_use: true },
+        loaded_instances: [{ id: 'loaded/model', config: { context_length: 16384 } }] },
+      { type: 'llm', key: 'unloaded/model', max_context_length: 131072, capabilities: { vision: false, trained_for_tool_use: true }, loaded_instances: [] }
+    ]);
+    expect((await service().getServerStatus() as any).model).toMatchObject({ id: 'loaded/model', contextLength: 16384 });
+    // An unloaded model's context depends on how LM Studio loads it, so it is left unknown.
+    expect((await service('unloaded/model').getServerStatus() as any).model.contextLength).toBeUndefined();
+  });
+
   it('leaves capabilities unknown for servers that do not report them', async () => {
     global.__requestUrlMock.mockResolvedValue({ status: 200, json: { data: [{ id: 'llama3' }] } });
     expect(await service().getServerStatus()).toEqual({
