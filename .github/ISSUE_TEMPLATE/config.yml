@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Setup guide
+    url: https://github.com/ServerKarma/ObsidianPrivateAI/blob/main/SETUP.md
+    about: Check the setup guide for connecting to your local AI server before opening an issue.

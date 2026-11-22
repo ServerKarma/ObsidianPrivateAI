@@ -44,6 +44,8 @@ Private AI reads which models are downloaded, which one is loaded, whether it ca
 - **Open Tab Context**: Focus your conversation on specific notes for focused insights
 - **Performance Tuning**: Customize models, search parameters, token limits, and more to tune performance for your hardware
 
+**Review request:** after you've had a few answers from the chat (five answered questions and at least an hour with the plugin), Private AI shows a pop-up asking you to leave a review. Choosing "Maybe later" or closing it brings it back after at least three days and three more answers. Leaving a review, starring the repository, or choosing "I already left a review" stops it for good. The pop-up is built into the plugin, loads nothing over the network, and only opens the review page or GitHub in your browser if you click those buttons.
+
 ![Easy and powerful configuration](img/config.png)
 
 ## Example Queries
