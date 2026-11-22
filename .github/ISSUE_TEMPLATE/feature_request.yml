@@ -1,0 +1,40 @@
+name: Feature request
+description: Suggest an idea or improvement for Private AI.
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe what you're trying to do and what gets in the way today.
+      placeholder: "I'm always frustrated when ..."
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: What would you like to happen?
+      description: Describe the feature or change you have in mind.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+      description: Other approaches or workarounds you've tried.
+  - type: dropdown
+    id: server
+    attributes:
+      label: Local AI server you use
+      description: Helps us know which setups to support.
+      multiple: true
+      options:
+        - LM Studio
+        - Ollama
+        - Other OpenAI-compatible server
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Mockups, screenshots, or links to similar features elsewhere.
