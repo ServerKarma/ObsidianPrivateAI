@@ -4,6 +4,8 @@
 [![Build](https://github.com/ServerKarma/ObsidianPrivateAI/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/ServerKarma/ObsidianPrivateAI/actions/workflows/build.yml)
 [![Tests](https://github.com/ServerKarma/ObsidianPrivateAI/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/ServerKarma/ObsidianPrivateAI/actions/workflows/test.yml)
 
+![Private AI answering a question from the notes, then asking before it creates a new note](img/readme/demo.gif)
+
 Your most sensitive notes, your private thoughts — other AI plugins send them to someone's servers. Private AI doesn't.
 
 * ✅ Your notes stay on your device
@@ -48,6 +50,18 @@ Private AI reads which models are downloaded, which one is loaded, whether it ca
 
 ![Easy and powerful configuration](img/config.png)
 
+## Screenshots
+
+Ask a question and the AI searches and reads your notes, then answers and lists the notes it read.
+
+![The chat answering "When did I replace the water heater?" from a note in the vault](img/readme/chat.png)
+
+Changes to your vault always wait for you. The dialog shows exactly what will be written, and nothing happens until you click Allow.
+
+![The confirmation dialog showing a new note's content with Deny and Allow buttons](img/readme/confirm.png)
+
+![The new Spring Garden note open in Obsidian after clicking Allow](img/readme/created.png)
+
 ## Example Queries
 
 - "I have to have a difficult conversation with a friend, read my journal entry about the situation and help me come up with a good way to talk to my friend compassionately"
@@ -83,6 +97,7 @@ If no model is loaded when you send a message, Private AI picks the smallest dow
 - `npm test` runs the unit and integration tests (Vitest). The agent stack under `src/agent/` has no Obsidian dependency, so the agent loop, MCP server, tools and search are tested in plain Node against an in-memory vault and a scripted model, plus a fake OpenAI-compatible server.
 - `npm run eval` boots real Obsidian with the test vault via wdio-obsidian-service (see `AGENTIC_HARNESS_PLAN.md`). The model is scripted, so it needs no LM Studio.
 - `npm run eval:live` is a manual suite against a real LM Studio (`e2e/live/`). Start LM Studio and its local server first. It checks that a model is loaded when none is, that the loaded model is reused, and that models without tool support or vision produce a clear message. It loads and unloads models and puts back what was loaded afterwards. The no-tools and no-vision cases are skipped unless such a model is downloaded (or named in `LIVE_NO_TOOLS_MODEL` / `LIVE_NO_VISION_MODEL`). Set `LMSTUDIO_URL` if the server is not at `http://localhost:1234`.
+- `npm run screenshots` recaptures the README screenshots and GIF in `img/readme/` from real Obsidian, using the demo notes in `e2e/vault` and a scripted model. On Linux run it as `xvfb-run -a -s "-screen 0 1280x800x24" npm run screenshots` (the GIF needs ffmpeg).
 
 ### Contributing
 

@@ -1,6 +1,6 @@
 {
   "name": "private-ai",
-  "version": "1.0.73",
+  "version": "1.0.76",
   "description": "Chat with your notes using a local AI model. Private by design: your notes never leave your device.",
   "main": "main.js",
   "scripts": {
@@ -12,7 +12,8 @@
     "eval:offline": "E2E_OFFLINE=1 wdio run e2e/wdio.conf.mts",
     "eval:live": "wdio run e2e/wdio.live.conf.mts",
     "version": "node version-bump.mjs",
-    "release": "npm run build && node version-bump.mjs"
+    "release": "npm run build && node version-bump.mjs",
+    "screenshots": "wdio run e2e/wdio.readme.conf.mts"
   },
   "keywords": [
     "obsidian",
