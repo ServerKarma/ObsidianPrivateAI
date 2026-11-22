@@ -34,33 +34,6 @@
   gap: 10px;
   min-height: 0;
 }
-.local-llm-review-prompt {
-  margin: 10px 10px 0;
-  padding: 10px 12px;
-  border: 1px solid var(--background-modifier-border);
-  border-left: 3px solid var(--interactive-accent);
-  border-radius: 8px;
-  background: var(--background-secondary);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-.local-llm-review-prompt-text {
-  font-size: 13px;
-  color: var(--text-normal);
-}
-.local-llm-review-prompt-actions {
-  display: flex;
-  gap: 8px;
-  flex-shrink: 0;
-}
-.local-llm-review-prompt-hidden {
-  display: none;
-}
-.local-llm-review-prompt-visible {
-  display: flex;
-}
 .local-llm-message {
   display: flex;
   flex-direction: column;
@@ -826,4 +799,67 @@
   border-radius: var(--radius-s);
   background: var(--background-secondary);
   font-size: var(--font-ui-small);
+}
+.local-llm-review-modal {
+  max-width: 440px;
+  text-align: center;
+}
+.local-llm-review-modal .modal-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px 4px;
+}
+.local-llm-review-modal-stars {
+  font-size: 34px;
+  letter-spacing: 4px;
+  line-height: 1;
+  color: #f5b301;
+  margin-top: 4px;
+}
+.local-llm-review-modal-title {
+  margin: 4px 0 0;
+  font-size: 22px;
+}
+.local-llm-review-modal-body {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+.local-llm-review-modal-actions {
+  display: flex;
+  flex-direction: column;
+  align-self: stretch;
+  gap: 8px;
+  margin-top: 12px;
+}
+.local-llm-review-modal-actions button {
+  width: 100%;
+  height: auto;
+  padding: 10px 16px;
+  font-size: 15px;
+}
+.local-llm-review-modal-primary {
+  font-weight: 600;
+}
+.local-llm-review-modal-footer {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+  margin-top: 6px;
+}
+.local-llm-review-modal-footer .local-llm-review-modal-link {
+  background: none;
+  border: none;
+  box-shadow: none;
+  padding: 4px;
+  height: auto;
+  font-size: 12px;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+.local-llm-review-modal-footer .local-llm-review-modal-link:hover {
+  color: var(--text-muted);
+  text-decoration: underline;
 }
