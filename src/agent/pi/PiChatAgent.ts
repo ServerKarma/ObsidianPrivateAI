@@ -13,7 +13,23 @@ export interface PiChatSettings {
 	systemPrompt: string;
 	/** Max rounds of tool calls before the agent must answer. */
 	maxToolRounds: number;
-	contextWindow: number;
+}
+
+/** The model a turn goes to, and the context length it is loaded with when the server reports it. */
+export interface ResolvedModel {
+	id: string;
+	contextWindow?: number;
+}
+
+/**
+ * Context length assumed when the server doesn't report one (not LM Studio, or the model
+ * isn't loaded yet). LM Studio reports the real value once the model is loaded.
+ */
+export const FALLBACK_CONTEXT_WINDOW = 8192;
+
+/** The reply cap actually sent: the user's max tokens, capped at half the context window so history still fits. */
+export function replyTokenLimit(maxTokens: number, contextWindow: number): number {
+	return Math.max(1, Math.min(maxTokens, Math.floor(contextWindow / 2)));
 }
 
 export type ChatAgentEvent =
@@ -28,14 +44,14 @@ export interface PiChatAgentDeps {
 	loadTools: () => Promise<AgentTool[]>;
 	/**
 	 * Checks the server before each turn and names the model to use (e.g. the one loaded in
-	 * LM Studio). Throws a ChatAgentError with instructions when the server can't be used;
-	 * returns undefined to fall back to the configured model.
+	 * LM Studio) and its loaded context length. Throws a ChatAgentError with instructions when
+	 * the server can't be used; returns undefined to fall back to the configured model.
 	 */
-	resolveModelId?: () => Promise<string | undefined>;
+	resolveModel?: () => Promise<ResolvedModel | undefined>;
 	/** Override for tests; defaults to Pi's streamSimple. */
 	streamFn?: StreamFn;
 	/** Override for tests; defaults to an OpenAI-compatible model built from settings. */
-	buildModel?: (settings: PiChatSettings, modelId: string) => Model<any>;
+	buildModel?: (settings: PiChatSettings, modelId: string, contextWindow: number) => Model<any>;
 	now?: () => Date;
 }
 
@@ -53,7 +69,7 @@ export function baseUrlFromEndpoint(endpoint: string): string {
 }
 
 /** An OpenAI-compatible Pi model for a local server (LM Studio, Ollama, llama.cpp, ...). */
-export function buildLocalModel(settings: PiChatSettings, modelId: string): Model<'openai-completions'> {
+export function buildLocalModel(settings: PiChatSettings, modelId: string, contextWindow = FALLBACK_CONTEXT_WINDOW): Model<'openai-completions'> {
 	return {
 		id: modelId,
 		name: modelId,
@@ -63,8 +79,8 @@ export function buildLocalModel(settings: PiChatSettings, modelId: string): Mode
 		reasoning: false,
 		input: ['text'],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		contextWindow: settings.contextWindow,
-		maxTokens: settings.maxTokens,
+		contextWindow,
+		maxTokens: replyTokenLimit(settings.maxTokens, contextWindow),
 		compat: {
 			supportsStore: false,
 			supportsDeveloperRole: false,
@@ -132,14 +148,18 @@ export class PiChatAgent {
 
 	async send(userText: string, onEvent: (e: ChatAgentEvent) => void, signal?: AbortSignal, options: ChatTurnOptions = {}): Promise<string> {
 		const settings = this.deps.settings();
-		const modelId = (await this.deps.resolveModelId?.()) || settings.model?.trim() || '';
+		const resolved = await this.deps.resolveModel?.();
+		const modelId = resolved?.id || settings.model?.trim() || '';
 		if (!modelId) {
 			throw new ChatAgentError('No model is loaded. Load a chat model in LM Studio, or pick one in the Private AI settings.');
 		}
 		const useTools = options.useTools !== false;
 		const tools = useTools ? await this.deps.loadTools() : [];
-		const model = (this.deps.buildModel ?? buildLocalModel)(settings, modelId);
-		const budgetChars = Math.max(8000, (settings.contextWindow - settings.maxTokens) * 3);
+		const contextWindow = resolved?.contextWindow ?? FALLBACK_CONTEXT_WINDOW;
+		const replyTokens = replyTokenLimit(settings.maxTokens, contextWindow);
+		const model = (this.deps.buildModel ?? buildLocalModel)(settings, modelId, contextWindow);
+		// What's left after the reply, at roughly 3 characters per token.
+		const budgetChars = Math.max(8000, (contextWindow - replyTokens) * 3);
 
 		let toolRounds = 0;
 		let lastAssistant: unknown = null;
@@ -179,7 +199,7 @@ export class PiChatAgent {
 		});
 		// Temperature and output length are per-request stream options.
 		const baseStream = agent.streamFn;
-		agent.streamFn = (m, ctx, opts) => baseStream(m, ctx, { ...opts, temperature: settings.temperature, maxTokens: settings.maxTokens });
+		agent.streamFn = (m, ctx, opts) => baseStream(m, ctx, { ...opts, temperature: settings.temperature, maxTokens: replyTokens });
 
 		let answer = '';
 		let textSinceTurnStart = false;

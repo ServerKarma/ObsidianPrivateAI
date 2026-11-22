@@ -25,7 +25,6 @@ export interface LocalLLMSettings {
 	// Agent (Pi harness) settings
 	allowNoteChanges: boolean;
 	maxToolRounds: number;
-	contextWindow: number;
 	// Image processing settings
 	enableImageTextExtraction: boolean;
 	// Files the agent can't see
@@ -43,8 +42,8 @@ export interface LocalLLMSettings {
 /** The pre-agent default prompt; replaced with an empty preference on load. */
 const LEGACY_DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant with access to the user's Obsidian vault. When provided with context from their notes, use that information to provide more accurate and relevant responses. Reference specific notes when appropriate, but focus on answering the user's question clearly and concisely.";
 
-/** Settings from the removed embedding/vector-store pipeline, dropped from data.json on load. */
-const REMOVED_SETTINGS = ['searchMaxResults', 'searchContextPercentage', 'searchThreshold', 'enableRAG', 'ragThreshold', 'ragMaxResults', 'embeddingEndpoint', 'embeddingModel', 'contextMode', 'mcpServerEnabled', 'mcpServerPort', 'mcpServerToken'];
+/** Settings that no longer exist (the embedding pipeline, the old MCP listener, the manual context window), dropped from data.json on load. */
+const REMOVED_SETTINGS = ['searchMaxResults', 'searchContextPercentage', 'searchThreshold', 'enableRAG', 'ragThreshold', 'ragMaxResults', 'embeddingEndpoint', 'embeddingModel', 'contextMode', 'mcpServerEnabled', 'mcpServerPort', 'mcpServerToken', 'contextWindow'];
 
 export const DEFAULT_SETTINGS: LocalLLMSettings = {
 	apiEndpoint: 'http://localhost:1234/v1/chat/completions',
@@ -55,7 +54,6 @@ export const DEFAULT_SETTINGS: LocalLLMSettings = {
 	// Read-only until the user turns this on (the agent asks the first time it wants to change a note)
 	allowNoteChanges: false,
 	maxToolRounds: 8,
-	contextWindow: 32768,
 	enableImageTextExtraction: true,
 	excludedFolders: [],
 	excludedFilePatterns: [],
@@ -197,11 +195,10 @@ export default class LocalLLMPlugin extends Plugin {
 				maxTokens: this.settings.maxTokens,
 				temperature: this.settings.temperature,
 				systemPrompt: this.settings.systemPrompt,
-				maxToolRounds: this.settings.maxToolRounds,
-				contextWindow: this.settings.contextWindow
+				maxToolRounds: this.settings.maxToolRounds
 			}),
 			loadTools: () => this.agentRuntime.loadAgentTools(),
-			resolveModelId: async () => {
+			resolveModel: async () => {
 				// Checked before every message, so the user gets instructions instead of a raw network error.
 				const { createLLMService } = await import('./services/LLMService');
 				const status = await createLLMService({
@@ -213,7 +210,8 @@ export default class LocalLLMPlugin extends Plugin {
 				if (status.state === 'no-models') throw new ChatAgentError(noModelsMessage());
 				if (status.state !== 'ready') return undefined;
 				if (status.model.toolUse === false) throw new ChatAgentError(noToolSupportMessage(status.model.id));
-				return status.model.id;
+				// The context length LM Studio loaded the model with; unknown until it is loaded.
+				return { id: status.model.id, contextWindow: status.model.contextLength };
 			}
 		});
 	}
@@ -561,7 +559,7 @@ class LocalLLMSettingTab extends PluginSettingTab {
 		addStyledSlider(
 			new Setting(containerEl)
 				.setName('Max tokens')
-				.setDesc('Maximum number of tokens in the response'),
+				.setDesc('Longest reply the AI may write, in tokens. The context window is read from LM Studio, and a reply never takes more than half of it, so there is always room for your notes and the conversation.'),
 			{
 				min: 100, max: 40000, step: 100, value: this.plugin.settings.maxTokens,
 				onChange: async (value) => {
@@ -624,19 +622,6 @@ class LocalLLMSettingTab extends PluginSettingTab {
 				min: 1, max: 20, step: 1, value: this.plugin.settings.maxToolRounds,
 				onChange: async (value) => {
 					this.plugin.settings.maxToolRounds = value;
-					await this.plugin.saveSettings();
-				}
-			}
-		);
-
-		addStyledSlider(
-			new Setting(containerEl)
-				.setName('Context window')
-				.setDesc('The model\'s context length in tokens (match the value you load the model with in LM Studio). Older messages are dropped to fit.'),
-			{
-				min: 4096, max: 131072, step: 4096, value: this.plugin.settings.contextWindow,
-				onChange: async (value) => {
-					this.plugin.settings.contextWindow = value;
 					await this.plugin.saveSettings();
 				}
 			}

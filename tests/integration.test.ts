@@ -112,7 +112,6 @@ function createPluginStub(
     systemPrompt: 'Be concise',
     model: 'test-model',
     maxToolRounds: 5,
-    contextWindow: 32768,
     contextNotesVisible: false,
   };
   return {

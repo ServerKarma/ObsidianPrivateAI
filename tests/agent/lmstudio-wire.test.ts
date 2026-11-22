@@ -71,7 +71,7 @@ describe('Pi agent against an OpenAI-compatible local server', () => {
 
 		const settings: PiChatSettings = {
 			apiEndpoint: endpoint, apiKey: 'sk-lm', model: 'qwen3-8b', maxTokens: 512,
-			temperature: 0.3, systemPrompt: '', maxToolRounds: 5, contextWindow: 32768,
+			temperature: 0.3, systemPrompt: '', maxToolRounds: 5,
 		};
 		const thinking: string[] = [];
 		const agent = new PiChatAgent({ settings: () => settings, loadTools: () => loadMcpTools(client) });
@@ -103,7 +103,7 @@ describe('Pi agent against an OpenAI-compatible local server', () => {
 		server = http.createServer();
 		await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
 		const agent = new PiChatAgent({
-			settings: () => ({ apiEndpoint: 'http://127.0.0.1:1/v1/chat/completions', model: 'm', maxTokens: 10, temperature: 0, systemPrompt: '', maxToolRounds: 1, contextWindow: 8192 }),
+			settings: () => ({ apiEndpoint: 'http://127.0.0.1:1/v1/chat/completions', model: 'm', maxTokens: 10, temperature: 0, systemPrompt: '', maxToolRounds: 1 }),
 			loadTools: async () => [],
 		});
 		await expect(agent.send('hi', () => undefined)).rejects.toThrow();
