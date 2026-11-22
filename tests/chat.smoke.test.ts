@@ -141,6 +141,16 @@ describe('Obsidian chat smoke test', () => {
     expect(rendered).toContain('ping');
     expect(rendered).toContain('Hello from test');
     expect(agentMock.send).toHaveBeenCalledTimes(1);
+
+    // Only the user's message sits in a bubble; the reply is inline. Both get one copy button.
+    const user = view.containerEl.querySelector('.local-llm-message-user') as HTMLElement;
+    const assistant = view.containerEl.querySelector('.local-llm-message-assistant') as HTMLElement;
+    expect(user.querySelector('.local-llm-message-bubble .local-llm-message-content')?.textContent).toBe('ping');
+    expect(assistant.querySelector('.local-llm-message-bubble')).toBeNull();
+    for (const message of [user, assistant]) {
+      expect(message.querySelectorAll('.local-llm-message-actions .local-llm-copy-button').length).toBe(1);
+      expect(message.querySelectorAll('button').length).toBe(1);
+    }
   });
 
   it('streams think tags into collapsible thinking blocks without exposing raw tags', async () => {

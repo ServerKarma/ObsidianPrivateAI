@@ -891,7 +891,11 @@ export class ChatView extends ItemView {
 			attr: { 'data-message-id': message.id }
 		});
 
-		const contentEl = messageEl.createEl('div', {
+		// Only the user's messages sit in a bubble; assistant replies are inline text.
+		const contentParent = message.role === 'user'
+			? messageEl.createEl('div', { cls: 'local-llm-message-bubble' })
+			: messageEl;
+		const contentEl = contentParent.createEl('div', {
 			cls: 'local-llm-message-content'
 		});
 
@@ -941,28 +945,6 @@ export class ChatView extends ItemView {
 		} else {
 			// Plain text for user messages
 			contentEl.setText(message.content);
-		}
-
-		// Add copy button for all non-streaming messages (both user and assistant)
-		if (!message.isStreaming) {
-			const copyButton = messageEl.createEl('button', {
-				cls: 'local-llm-copy-button',
-				attr: { 'aria-label': 'Copy message content', 'type': 'button' }
-			});
-			setIcon(copyButton, 'copy');
-
-			copyButton.addEventListener('click', async () => {
-				await navigator.clipboard.writeText(message.content);
-
-				// Show success feedback
-				setIcon(copyButton, 'check');
-				copyButton.classList.add('copied');
-
-				setTimeout(() => {
-					setIcon(copyButton, 'copy');
-					copyButton.classList.remove('copied');
-				}, 1000);
-			});
 		}
 
 		// Show used notes information for assistant messages
@@ -1036,7 +1018,34 @@ export class ChatView extends ItemView {
 			});
 		}
 
-		const timestampEl = messageEl.createEl('div', {
+		// Actions row under the message. Its height is always reserved, so showing the
+		// user bubble's copy button on hover never shifts the layout.
+		const actionsEl = messageEl.createEl('div', {
+			cls: 'local-llm-message-actions'
+		});
+
+		if (!message.isStreaming) {
+			const copyButton = actionsEl.createEl('button', {
+				cls: 'clickable-icon local-llm-copy-button',
+				attr: { 'aria-label': 'Copy message', 'type': 'button' }
+			});
+			setIcon(copyButton, 'copy');
+
+			copyButton.addEventListener('click', async () => {
+				await navigator.clipboard.writeText(message.content);
+
+				// Brief confirmation, then back to the copy icon.
+				setIcon(copyButton, 'check');
+				copyButton.classList.add('copied');
+
+				setTimeout(() => {
+					setIcon(copyButton, 'copy');
+					copyButton.classList.remove('copied');
+				}, 1000);
+			});
+		}
+
+		const timestampEl = actionsEl.createEl('span', {
 			cls: 'local-llm-message-timestamp'
 		});
 
