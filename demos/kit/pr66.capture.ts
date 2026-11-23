@@ -36,6 +36,16 @@ describe("PR 66 demo: chat history", function () {
         await browser.executeObsidian(async ({ app }) => {
             const plugin = (app as any).plugins.plugins["private-ai"];
             await plugin.chatHistory?.clear?.();
+            plugin.settings.chatRetentionDays = 0;
+            const old = "2025-10-02T09:15:00.000Z";
+            await plugin.chatHistory.save({
+                version: 1, id: "20251002T091500Z-demo01", title: "What should I pack for Iceland?", createdAt: old, updatedAt: old,
+                messages: [
+                    { id: "u1", role: "user", content: "What should I pack for Iceland?", timestamp: old },
+                    { id: "a1", role: "assistant", content: "Layers, a waterproof shell and microspikes.", timestamp: old },
+                ],
+                agentMessages: [],
+            });
             await app.workspace.getLeaf(false).openFile(app.vault.getAbstractFileByPath("Home/Water Heater Replacement.md") as any);
         });
         await k.openChat();
@@ -60,7 +70,7 @@ describe("PR 66 demo: chat history", function () {
 
         await k.caption("Click History: every saved chat, newest first, with date and message count");
         await k.click(browser.$(`${k.CHAT} .local-llm-history-button`), 2500);
-        if ((await historyRows()).length !== 2) throw new Error("expected 2 saved chats");
+        if ((await historyRows()).length !== 3) throw new Error("expected 3 saved chats");
 
         await k.caption("Open the earlier chat: its messages come back");
         const open = (await browser.$$(`${k.CHAT} .local-llm-history-open`).filter(async (b) => (await b.getText()).includes("water heater")))[0];
@@ -71,16 +81,26 @@ describe("PR 66 demo: chat history", function () {
         if (!/water heater/.test(await k.lastAnswer())) throw new Error("reopened chat lost its history");
         await browser.pause(1500);
 
-        await k.caption("Delete a chat from the list with its trash button");
+        await k.caption("Keep chats for: 1 day, 7 days, 30 days, 1 year or indefinitely (the default)");
         await k.click(browser.$(`${k.CHAT} .local-llm-history-button`), 1500);
+        const keep = browser.$(`${k.CHAT} .local-llm-history-retention-select`);
+        await k.pointAt(keep);
+        await browser.pause(1200);
+        await k.caption("Pick 30 days: last year's Iceland chat is deleted right away");
+        await (await keep).selectByVisibleText("30 days");
+        await browser.pause(3000);
+        if ((await historyRows()).length !== 2) throw new Error("retention did not remove the old chat");
+
+        await k.caption("Delete one chat with its trash button");
         const del = (await browser.$$(`${k.CHAT} .local-llm-history-item`).filter(async (r) => (await r.getText()).includes("sourdough")))[0].$(".local-llm-history-delete");
         await k.click(del, 1800);
         if ((await historyRows()).length !== 1) throw new Error("delete did not remove the chat");
-        await k.caption("Delete every chat with Delete all chats at the bottom of the list. It asks for a second click");
-        const clearAll = browser.$(`${k.CHAT} .local-llm-history-footer .local-llm-history-clear`);
+
+        await k.caption("Delete all sits at the top, next to Back to chat. It asks for a second click");
+        const clearAll = browser.$(`${k.CHAT} .local-llm-history-top .local-llm-history-clear`);
         await k.click(clearAll, 1800);
         await k.click(clearAll, 2000);
-        if ((await historyRows()).length !== 0) throw new Error("Delete all chats left chats behind");
+        if ((await historyRows()).length !== 0) throw new Error("Delete all left chats behind");
         await k.click(browser.$(`${k.CHAT} .local-llm-history-back`), 1200);
 
         await k.caption("Chatting still works, and the new chat is saved again");
@@ -90,11 +110,13 @@ describe("PR 66 demo: chat history", function () {
         if ((await historyRows()).length !== 1) throw new Error("the new chat was not saved");
         await k.click(browser.$(`${k.CHAT} .local-llm-history-back`), 1000);
 
-        await k.caption("Settings keeps only the Save chats switch; deleting now lives in History");
+        await k.caption("The same Keep chats for choice is in Settings, under Chat history");
         await k.openPluginSettings();
         await k.pointAt(await k.settingControl("Save chats", ".checkbox-container"));
-        await browser.pause(2500);
+        await browser.pause(1200);
+        await k.pointAt(await k.settingControl("Keep chats for"));
+        await browser.pause(2200);
         await k.closeSettings();
-        await k.caption("Done: save, list, reopen and continue, delete one or all from History", 3000);
+        await k.caption("Done: save, reopen and continue, auto-delete by age, delete one or all from History", 3000);
     });
 });
