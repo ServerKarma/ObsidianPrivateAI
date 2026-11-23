@@ -47,6 +47,21 @@ export interface ChatSummary {
 
 const TITLE_LENGTH = 60;
 
+/** How long saved chats are kept, in days; 0 keeps them indefinitely. */
+export const CHAT_RETENTION_CHOICES: ReadonlyArray<{ days: number; label: string }> = [
+	{ days: 1, label: '1 day' },
+	{ days: 7, label: '7 days' },
+	{ days: 30, label: '30 days' },
+	{ days: 365, label: '1 year' },
+	{ days: 0, label: 'Indefinitely' },
+];
+
+/** Chats last updated before this time are past the retention period; null when kept indefinitely. */
+export function retentionCutoff(days: number, now = new Date()): Date | null {
+	if (!Number.isFinite(days) || days <= 0) return null;
+	return new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+}
+
 /** A short title from the first thing the user asked. */
 export function chatTitle(messages: readonly SavedChatMessage[]): string {
 	const first = messages.find((m) => m.role === 'user' && m.content.trim().length > 0);
@@ -118,6 +133,18 @@ export class ChatHistory {
 		const chats = await this.list();
 		for (const c of chats) await this.delete(c.id);
 		return chats.length;
+	}
+
+	/** Deletes chats last updated more than `days` days ago (0 keeps everything). Returns how many were removed. */
+	async removeOlderThan(days: number, now = new Date()): Promise<number> {
+		const cutoff = retentionCutoff(days, now);
+		if (!cutoff) return 0;
+		const old = (await this.list()).filter((c) => {
+			const updated = Date.parse(c.updatedAt);
+			return Number.isFinite(updated) && updated < cutoff.getTime();
+		});
+		for (const c of old) await this.delete(c.id);
+		return old.length;
 	}
 
 	/** Keeps the newest `max` chats and deletes the rest. */

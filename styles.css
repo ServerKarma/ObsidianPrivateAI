@@ -1074,12 +1074,19 @@
 	padding: 0 8px;
 }
 
-.local-llm-history-footer {
+.local-llm-history-actions {
 	display: flex;
-	justify-content: flex-end;
-	margin-top: 12px;
-	padding-top: 8px;
-	border-top: 1px solid var(--background-modifier-border);
+	gap: 6px;
+}
+
+.local-llm-history-retention {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	margin-bottom: 10px;
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
 }
 
 /* History sits next to New chat, on the right */

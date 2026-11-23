@@ -5,7 +5,7 @@ import { PiChatAgent, ChatAgentEvent } from '../agent/pi/PiChatAgent';
 import { describeToolCall, summarizeToolResult } from '../agent/pi/toolActivity';
 import { LoggingUtility } from '../utils/LoggingUtility';
 import LocalLLMPlugin from '../main';
-import { ChatSummary, SavedChat, SavedChatMessage, chatTitle, newChatId } from '../services/ChatHistory';
+import { CHAT_RETENTION_CHOICES, ChatSummary, SavedChat, SavedChatMessage, chatTitle, newChatId } from '../services/ChatHistory';
 import type { AgentMessage } from '@mariozechner/pi-agent-core';
 
 export const CHAT_VIEW_TYPE = 'local-llm-chat-view';
@@ -1242,6 +1242,7 @@ export class ChatView extends ItemView {
 		let chats: ChatSummary[] = [];
 		try {
 			await this.historySaved;
+			await this.plugin.applyChatRetention?.();
 			chats = (await this.plugin.chatHistory?.list()) ?? [];
 		} catch (error) {
 			LoggingUtility.error('Could not list saved chats:', error);
@@ -1253,8 +1254,21 @@ export class ChatView extends ItemView {
 
 		const top = this.historyPanel.createEl('div', { cls: 'local-llm-history-top' });
 		top.createEl('span', { cls: 'local-llm-history-heading', text: 'Saved chats' });
-		const back = top.createEl('button', { cls: 'local-llm-history-back', text: 'Back to chat', attr: { type: 'button' } });
+		const actions = top.createEl('div', { cls: 'local-llm-history-actions' });
+		if (chats.length > 0) this.addClearAllButton(actions);
+		const back = actions.createEl('button', { cls: 'local-llm-history-back', text: 'Back to chat', attr: { type: 'button' } });
 		back.addEventListener('click', () => this.hideHistory());
+
+		const keep = this.historyPanel.createEl('label', { cls: 'local-llm-history-retention' });
+		keep.createEl('span', { text: 'Keep chats for' });
+		const select = keep.createEl('select', { cls: 'dropdown local-llm-history-retention-select' });
+		for (const choice of CHAT_RETENTION_CHOICES) select.createEl('option', { text: choice.label }).value = String(choice.days);
+		select.value = String(this.plugin.settings.chatRetentionDays ?? 0);
+		select.addEventListener('change', async () => {
+			const removed = await this.plugin.setChatRetention(Number(select.value));
+			if (removed > 0) new Notice(`Deleted ${removed} saved chat${removed === 1 ? '' : 's'} older than that.`);
+			await this.showHistory();
+		});
 
 		if (chats.length === 0) {
 			this.historyPanel.createEl('div', {
@@ -1296,23 +1310,24 @@ export class ChatView extends ItemView {
 				await this.showHistory();
 			});
 		}
+	}
 
-		const footer = this.historyPanel.createEl('div', { cls: 'local-llm-history-footer' });
-		const clearAll = footer.createEl('button', {
+	/** "Delete all" in the History header. Needs a second click, so one stray click can't wipe the history. */
+	private addClearAllButton(parent: HTMLElement): void {
+		const clearAll = parent.createEl('button', {
 			cls: 'local-llm-history-clear mod-warning',
-			text: 'Delete all chats',
-			attr: { type: 'button' }
+			text: 'Delete all',
+			attr: { type: 'button', 'aria-label': 'Delete all saved chats' }
 		});
 		let armed = false;
 		clearAll.addEventListener('click', async () => {
-			// Two clicks, so one stray click can't wipe the history.
 			if (!armed) {
 				armed = true;
-				clearAll.setText('Click again to delete all');
+				clearAll.setText('Click again to delete');
 				window.setTimeout(() => {
 					if (!armed) return;
 					armed = false;
-					clearAll.setText('Delete all chats');
+					clearAll.setText('Delete all');
 				}, 4000);
 				return;
 			}

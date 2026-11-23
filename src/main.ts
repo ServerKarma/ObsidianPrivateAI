@@ -6,7 +6,7 @@ import { ChatAgentError, PiChatAgent } from './agent/pi/PiChatAgent';
 import { imagesUnavailableMessage, noModelsMessage, noToolSupportMessage, noVisionMessage, serverOfflineMessage } from './services/modelGuidance';
 import { ImageTextExtractor } from './services/ImageTextExtractor';
 import { CleanupResult, removeLegacyEmbeddingFiles } from './services/LegacyEmbeddingCleanup';
-import { ChatHistory } from './services/ChatHistory';
+import { CHAT_RETENTION_CHOICES, ChatHistory } from './services/ChatHistory';
 import '../styles.css';
 import manifest from '../manifest.json';
 
@@ -34,6 +34,8 @@ export interface LocalLLMSettings {
 	excludedFilePatterns: string[];
 	// Keep chats in the plugin folder so they can be reopened from the History list
 	saveChatHistory: boolean;
+	// Days to keep saved chats; 0 keeps them indefinitely
+	chatRetentionDays: number;
 	// Context notes visibility setting
 	contextNotesVisible: boolean;
 	// Review prompt tracking
@@ -63,6 +65,7 @@ export const DEFAULT_SETTINGS: LocalLLMSettings = {
 	excludedFolders: [],
 	excludedFilePatterns: [],
 	saveChatHistory: true,
+	chatRetentionDays: 0,
 	contextNotesVisible: false,
 	usageTimeMs: 0,
 	lastUsageStartTimestamp: null,
@@ -130,6 +133,7 @@ export default class LocalLLMPlugin extends Plugin {
 
 		this.app.workspace.onLayoutReady(async () => {
 			await this.removeLegacyVectorStore();
+			await this.applyChatRetention();
 			await this.agentRuntime.warmIndex();
 			if (this.settings.enableImageTextExtraction && this.agentRuntime.pendingImages().length > 0) {
 				void this.processImages(true);
@@ -177,6 +181,23 @@ export default class LocalLLMPlugin extends Plugin {
 		if (this.agentRuntime) {
 			await this.agentRuntime.shutdown();
 		}
+	}
+
+	/** Deletes saved chats older than the "Keep chats for" setting. Returns how many were removed. */
+	async applyChatRetention(): Promise<number> {
+		try {
+			return (await this.chatHistory?.removeOlderThan(this.settings.chatRetentionDays ?? 0)) ?? 0;
+		} catch (error) {
+			LoggingUtility.error('Could not remove old saved chats:', error);
+			return 0;
+		}
+	}
+
+	/** Changes how long chats are kept and removes the ones now past it. Returns how many were removed. */
+	async setChatRetention(days: number): Promise<number> {
+		this.settings.chatRetentionDays = days;
+		await this.saveSettings();
+		return this.applyChatRetention();
 	}
 
 	async loadSettings() {
@@ -657,13 +678,25 @@ class LocalLLMSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Save chats')
-			.setDesc('Keep your chats so you can reopen them from the History button in the chat pane. They are stored in this plugin\'s folder, not in your notes, and the newest 100 are kept. To delete them all, use Delete all chats at the bottom of the History list.')
+			.setDesc('Keep your chats so you can reopen them from the History button in the chat pane. They are stored in this plugin\'s folder, not in your notes, and the newest 100 are kept. To delete them all, use Delete all at the top of the History list.')
 			.addToggle(toggle => toggle
 				.setValue(this.plugin.settings.saveChatHistory)
 				.onChange(async (value) => {
 					this.plugin.settings.saveChatHistory = value;
 					await this.plugin.saveSettings();
 				}));
+
+		new Setting(containerEl)
+			.setName('Keep chats for')
+			.setDesc('Saved chats not used for this long are deleted. Also in the History list.')
+			.addDropdown(dropdown => {
+				for (const choice of CHAT_RETENTION_CHOICES) dropdown.addOption(String(choice.days), choice.label);
+				dropdown.setValue(String(this.plugin.settings.chatRetentionDays ?? 0));
+				dropdown.onChange(async (value) => {
+					const removed = await this.plugin.setChatRetention(Number(value));
+					if (removed > 0) new Notice(`Deleted ${removed} saved chat${removed === 1 ? '' : 's'} older than that.`);
+				});
+			});
 
 		new Setting(containerEl).setName('Files the AI can\'t see').setHeading();
 

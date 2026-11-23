@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ChatHistory, HistoryFileStore, SavedChat, chatTitle, newChatId } from '../src/services/ChatHistory';
+import { ChatHistory, HistoryFileStore, SavedChat, chatTitle, newChatId, CHAT_RETENTION_CHOICES, retentionCutoff } from '../src/services/ChatHistory';
 
 const llmMock = { testConnection: vi.fn(async () => ({ success: true })) };
 
@@ -65,6 +65,27 @@ describe('ChatHistory', () => {
     await expect(history.load('../secret')).rejects.toThrow(/Invalid chat id/);
   });
 
+  it('deletes chats older than the retention period, and keeps everything when indefinite', async () => {
+    const store = new MemoryStore();
+    const history = new ChatHistory(store, 'plug/chats');
+    const now = new Date('2026-11-23T12:00:00Z');
+    const daysAgo = (d: number) => new Date(now.getTime() - d * 86400000).toISOString();
+    const chat = (id: string, updatedAt: string): SavedChat => ({ version: 1, id, title: id, createdAt: updatedAt, updatedAt, messages: [], agentMessages: [] });
+    await history.save(chat('today', daysAgo(0)));
+    await history.save(chat('week', daysAgo(6)));
+    await history.save(chat('month', daysAgo(29)));
+    await history.save(chat('old', daysAgo(400)));
+
+    expect(retentionCutoff(0, now)).toBeNull();
+    expect(await history.removeOlderThan(0, now)).toBe(0);
+    expect(await history.removeOlderThan(365, now)).toBe(1);
+    expect((await history.list()).map((c) => c.id)).toEqual(['today', 'week', 'month']);
+    expect(await history.removeOlderThan(7, now)).toBe(1);
+    expect(await history.removeOlderThan(1, now)).toBe(1);
+    expect((await history.list()).map((c) => c.id)).toEqual(['today']);
+    expect(CHAT_RETENTION_CHOICES.map((c) => c.label)).toEqual(['1 day', '7 days', '30 days', '1 year', 'Indefinitely']);
+  });
+
   it('titles a chat from the first question and makes sortable ids', () => {
     expect(chatTitle([])).toBe('New chat');
     expect(chatTitle([{ id: '1', role: 'user', content: '  When did I\nreplace the heater? ', timestamp: '' }])).toBe('When did I replace the heater?');
@@ -93,9 +114,15 @@ describe('chat pane history', () => {
   }
 
   function createView(agent = createAgent()) {
+    const chatHistory = new ChatHistory(store, 'plug/chats');
     const plugin = {
       settings,
-      chatHistory: new ChatHistory(store, 'plug/chats'),
+      chatHistory,
+      applyChatRetention: vi.fn(async () => chatHistory.removeOlderThan(Number(settings.chatRetentionDays ?? 0))),
+      setChatRetention: vi.fn(async (days: number) => {
+        settings.chatRetentionDays = days;
+        return chatHistory.removeOlderThan(days);
+      }),
       agentRuntime: { workspaceContext: () => '[Obsidian workspace]' },
       createChatAgent: () => agent,
       saveSettings: vi.fn(async () => undefined),
@@ -174,7 +201,7 @@ describe('chat pane history', () => {
     expect(store.files.size).toBe(1);
   });
 
-  it('deletes every saved chat from the bottom of the list, after a second click', async () => {
+  it('deletes every saved chat from the top of the list, after a second click', async () => {
     const { view } = createView();
     await view.onOpen();
     await ask(view, 'first');
@@ -183,10 +210,12 @@ describe('chat pane history', () => {
     expect(store.files.size).toBe(2);
 
     await click(view.containerEl.querySelector('.local-llm-history-button'));
-    const clearAll = () => view.containerEl.querySelector('.local-llm-history-footer .local-llm-history-clear') as HTMLButtonElement;
-    expect(clearAll().textContent).toBe('Delete all chats');
+    const clearAll = () => view.containerEl.querySelector('.local-llm-history-top .local-llm-history-clear') as HTMLButtonElement;
+    // Next to Back to chat, so no scrolling is needed.
+    expect(clearAll().nextElementSibling?.classList.contains('local-llm-history-back')).toBe(true);
+    expect(clearAll().textContent).toBe('Delete all');
     await click(clearAll());
-    expect(clearAll().textContent).toBe('Click again to delete all');
+    expect(clearAll().textContent).toBe('Click again to delete');
     expect(store.files.size).toBe(2);
     await click(clearAll());
     expect(store.files.size).toBe(0);
@@ -198,6 +227,27 @@ describe('chat pane history', () => {
     await ask(view, 'third');
     expect(store.files.size).toBe(1);
     expect((JSON.parse([...store.files.values()][0]) as SavedChat).messages.map((m) => m.content)).toContain('third');
+  });
+
+  it('changes how long chats are kept from the History list, removing older ones', async () => {
+    const { view } = createView();
+    await view.onOpen();
+    await ask(view, 'recent');
+    const old: SavedChat = { version: 1, id: '20240101T000000Z-aaaaaa', title: 'ancient', createdAt: '2024-01-01T00:00:00.000Z', updatedAt: '2024-01-01T00:00:00.000Z', messages: [], agentMessages: [] };
+    await new ChatHistory(store, 'plug/chats').save(old);
+
+    await click(view.containerEl.querySelector('.local-llm-history-button'));
+    const select = view.containerEl.querySelector('.local-llm-history-retention-select') as HTMLSelectElement;
+    expect([...select.options].map((o) => o.textContent)).toEqual(['1 day', '7 days', '30 days', '1 year', 'Indefinitely']);
+    expect(select.value).toBe('0');
+    expect(view.containerEl.querySelectorAll('.local-llm-history-item')).toHaveLength(2);
+
+    select.value = '30';
+    select.dispatchEvent(new Event('change'));
+    for (let i = 0; i < 8; i++) await tick();
+    expect(settings.chatRetentionDays).toBe(30);
+    const titles = [...view.containerEl.querySelectorAll('.local-llm-history-title')].map((e) => e.textContent);
+    expect(titles).toEqual(['recent']);
   });
 
   it('saves nothing when saving is off', async () => {

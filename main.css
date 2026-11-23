@@ -882,6 +882,19 @@
   height: auto;
   padding: 0 8px;
 }
+.local-llm-history-actions {
+  display: flex;
+  gap: 6px;
+}
+.local-llm-history-retention {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
 .local-llm-header-buttons .local-llm-history-button {
   margin-left: auto;
 }
