@@ -76,15 +76,25 @@ describe("PR 66 demo: chat history", function () {
         const del = (await browser.$$(`${k.CHAT} .local-llm-history-item`).filter(async (r) => (await r.getText()).includes("sourdough")))[0].$(".local-llm-history-delete");
         await k.click(del, 1800);
         if ((await historyRows()).length !== 1) throw new Error("delete did not remove the chat");
+        await k.caption("Delete every chat with Delete all chats at the bottom of the list. It asks for a second click");
+        const clearAll = browser.$(`${k.CHAT} .local-llm-history-footer .local-llm-history-clear`);
+        await k.click(clearAll, 1800);
+        await k.click(clearAll, 2000);
+        if ((await historyRows()).length !== 0) throw new Error("Delete all chats left chats behind");
         await k.click(browser.$(`${k.CHAT} .local-llm-history-back`), 1200);
 
-        await k.caption("Settings, then Private AI: Chat history can be turned off or cleared");
+        await k.caption("Chatting still works, and the new chat is saved again");
+        await k.click(browser.$(`${k.CHAT} .local-llm-new-chat-button`), 800);
+        await k.ask("When did I replace the water heater?");
+        await k.click(browser.$(`${k.CHAT} .local-llm-history-button`), 2200);
+        if ((await historyRows()).length !== 1) throw new Error("the new chat was not saved");
+        await k.click(browser.$(`${k.CHAT} .local-llm-history-back`), 1000);
+
+        await k.caption("Settings keeps only the Save chats switch; deleting now lives in History");
         await k.openPluginSettings();
         await k.pointAt(await k.settingControl("Save chats", ".checkbox-container"));
-        await browser.pause(1500);
-        await k.pointAt(await k.settingControl("Delete saved chats", "button"));
-        await browser.pause(1500);
+        await browser.pause(2500);
         await k.closeSettings();
-        await k.caption("Done: save, list, reopen and continue, delete; chatting works as before", 3000);
+        await k.caption("Done: save, list, reopen and continue, delete one or all from History", 3000);
     });
 });
