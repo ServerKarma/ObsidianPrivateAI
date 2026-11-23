@@ -657,36 +657,12 @@ class LocalLLMSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Save chats')
-			.setDesc('Keep your chats so you can reopen them from the History button in the chat pane. They are stored in this plugin\'s folder, not in your notes, and the newest 100 are kept.')
+			.setDesc('Keep your chats so you can reopen them from the History button in the chat pane. They are stored in this plugin\'s folder, not in your notes, and the newest 100 are kept. To delete them all, use Delete all chats at the bottom of the History list.')
 			.addToggle(toggle => toggle
 				.setValue(this.plugin.settings.saveChatHistory)
 				.onChange(async (value) => {
 					this.plugin.settings.saveChatHistory = value;
 					await this.plugin.saveSettings();
-				}));
-
-		let armed = false;
-		new Setting(containerEl)
-			.setName('Delete saved chats')
-			.setDesc('Removes every saved chat. This can\'t be undone.')
-			.addButton(button => button
-				.setButtonText('Delete all')
-				.setWarning()
-				.onClick(async () => {
-					// Two clicks, so one stray click can't wipe the history.
-					if (!armed) {
-						armed = true;
-						button.setButtonText('Click again to delete');
-						window.setTimeout(() => {
-							armed = false;
-							button.setButtonText('Delete all');
-						}, 4000);
-						return;
-					}
-					armed = false;
-					button.setButtonText('Delete all');
-					const removed = await this.plugin.chatHistory.clear();
-					new Notice(removed === 0 ? 'No saved chats to delete.' : `Deleted ${removed} saved chat${removed === 1 ? '' : 's'}.`);
 				}));
 
 		new Setting(containerEl).setName('Files the AI can\'t see').setHeading();

@@ -1296,6 +1296,39 @@ export class ChatView extends ItemView {
 				await this.showHistory();
 			});
 		}
+
+		const footer = this.historyPanel.createEl('div', { cls: 'local-llm-history-footer' });
+		const clearAll = footer.createEl('button', {
+			cls: 'local-llm-history-clear mod-warning',
+			text: 'Delete all chats',
+			attr: { type: 'button' }
+		});
+		let armed = false;
+		clearAll.addEventListener('click', async () => {
+			// Two clicks, so one stray click can't wipe the history.
+			if (!armed) {
+				armed = true;
+				clearAll.setText('Click again to delete all');
+				window.setTimeout(() => {
+					if (!armed) return;
+					armed = false;
+					clearAll.setText('Delete all chats');
+				}, 4000);
+				return;
+			}
+			armed = false;
+			let removed = 0;
+			try {
+				removed = await this.plugin.chatHistory.clear();
+			} catch (error) {
+				LoggingUtility.error('Could not delete saved chats:', error);
+			}
+			// The open chat was one of them, so keep it from being saved again under its old id.
+			this.chatId = null;
+			this.chatCreatedAt = null;
+			new Notice(removed === 0 ? 'No saved chats to delete.' : `Deleted ${removed} saved chat${removed === 1 ? '' : 's'}.`);
+			await this.showHistory();
+		});
 	}
 
 	/** Reopens a saved chat: shows its messages and gives the agent its earlier context. */

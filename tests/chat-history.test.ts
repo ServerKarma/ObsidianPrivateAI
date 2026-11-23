@@ -174,6 +174,32 @@ describe('chat pane history', () => {
     expect(store.files.size).toBe(1);
   });
 
+  it('deletes every saved chat from the bottom of the list, after a second click', async () => {
+    const { view } = createView();
+    await view.onOpen();
+    await ask(view, 'first');
+    await click(view.containerEl.querySelector('.local-llm-new-chat-button'));
+    await ask(view, 'second');
+    expect(store.files.size).toBe(2);
+
+    await click(view.containerEl.querySelector('.local-llm-history-button'));
+    const clearAll = () => view.containerEl.querySelector('.local-llm-history-footer .local-llm-history-clear') as HTMLButtonElement;
+    expect(clearAll().textContent).toBe('Delete all chats');
+    await click(clearAll());
+    expect(clearAll().textContent).toBe('Click again to delete all');
+    expect(store.files.size).toBe(2);
+    await click(clearAll());
+    expect(store.files.size).toBe(0);
+    expect(view.containerEl.querySelector('.local-llm-history-empty')?.textContent).toContain('No saved chats yet');
+    expect(view.containerEl.querySelector('.local-llm-history-clear')).toBeNull();
+
+    // Like deleting one chat: if you keep talking in the chat on screen, it is saved again as a new chat.
+    await click(view.containerEl.querySelector('.local-llm-history-back'));
+    await ask(view, 'third');
+    expect(store.files.size).toBe(1);
+    expect((JSON.parse([...store.files.values()][0]) as SavedChat).messages.map((m) => m.content)).toContain('third');
+  });
+
   it('saves nothing when saving is off', async () => {
     settings.saveChatHistory = false;
     const { view } = createView();
