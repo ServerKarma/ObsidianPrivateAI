@@ -9,6 +9,7 @@ import { CleanupResult, removeLegacyEmbeddingFiles } from './services/LegacyEmbe
 import '../styles.css';
 import manifest from '../manifest.json';
 import { ReviewModal, ReviewModalChoice } from './views/ReviewModal';
+import { remoteServerWarning } from './services/endpointLocality';
 import { GITHUB_REPO_URL, REVIEW_MODAL_DELAY_MS, REVIEW_PAGE_URL, shouldShowReviewPrompt } from './services/reviewPrompt';
 
 export const CHAT_VIEW_TYPE = 'local-llm-chat-view';
@@ -449,14 +450,21 @@ class LocalLLMSettingTab extends PluginSettingTab {
 			});
 		};
 
-		new Setting(containerEl)
+		const endpointSetting = new Setting(containerEl)
 			.setName('API endpoint')
-			.setDesc('The endpoint URL for your local LLM API')
-			.addText(text => text
+			.setDesc('The endpoint URL for your local LLM API');
+		const endpointWarning = endpointSetting.descEl.createDiv({ cls: 'local-llm-remote-server-warning' });
+		const showEndpointWarning = (value: string) => {
+			endpointWarning.setText(remoteServerWarning(value));
+			endpointWarning.style.display = endpointWarning.textContent ? '' : 'none';
+		};
+		showEndpointWarning(this.plugin.settings.apiEndpoint);
+		endpointSetting.addText(text => text
 				.setPlaceholder('http://localhost:1234/v1/chat/completions')
 				.setValue(this.plugin.settings.apiEndpoint)
 				.onChange(async (value) => {
 					this.plugin.settings.apiEndpoint = value;
+					showEndpointWarning(value);
 					await this.plugin.saveSettings();
 				}));
 

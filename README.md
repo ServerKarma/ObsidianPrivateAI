@@ -3,6 +3,7 @@
 [![Latest release](https://img.shields.io/github/v/release/ServerKarma/ObsidianPrivateAI?label=release)](https://github.com/ServerKarma/ObsidianPrivateAI/releases/latest)
 [![Build](https://github.com/ServerKarma/ObsidianPrivateAI/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/ServerKarma/ObsidianPrivateAI/actions/workflows/build.yml)
 [![Tests](https://github.com/ServerKarma/ObsidianPrivateAI/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/ServerKarma/ObsidianPrivateAI/actions/workflows/test.yml)
+[![Privacy scan](https://github.com/ServerKarma/ObsidianPrivateAI/actions/workflows/privacy.yml/badge.svg?branch=main)](https://github.com/ServerKarma/ObsidianPrivateAI/actions/workflows/privacy.yml)
 
 ![Private AI answering a question from the notes, then asking before it creates a new note](img/readme/demo.gif)
 
@@ -14,6 +15,25 @@ Your most sensitive notes, your private thoughts — other AI plugins send them 
 * ✅ No analytics or tracking
 
 Compatible With: [LM Studio](https://lmstudio.ai/)
+
+## Privacy
+
+Private AI talks to one place: the server URL in its settings, which is LM Studio on your own computer by default. It has no telemetry, analytics, update checks or crash reporting, and its built-in MCP server has no network port.
+
+How that is kept true:
+
+- **Every build is scanned.** `npm run privacy:scan` checks the exact `main.js` that ships, including all bundled dependencies (the Pi harness and everything under it). It fails if a new package, network call, host name, runtime module or telemetry library shows up that hasn't been reviewed in [`scripts/privacy-allowlist.json`](scripts/privacy-allowlist.json), and it always fails on Node networking modules, child processes and MCP network transports. It runs on every pull request and push, weekly on main, and before every release.
+- **Every request is recorded in a real-Obsidian test.** The privacy eval logs every request Obsidian makes while the plugin chats, searches, reads and edits notes, and fails if any goes anywhere but the configured local server.
+- **Answers can't load remote content.** If a note you clipped from the web tells the model to put your notes in an image link, the chat shows that image as text instead of loading it. Links in answers stay links: they only open if you click them.
+- **Unused cloud code is left out.** The Pi harness supports cloud providers; their code and its list of cloud endpoints are stubbed out of the build.
+
+![A clipped note tries to leak notes through an image link; nothing is fetched](img/privacy/nothing-leaves.gif)
+
+What this does not cover:
+
+- **The server you choose.** If you point the server URL at another machine (a PC on your network or a cloud host), your questions and the notes the AI reads go there. The settings tab warns you when the server isn't on this computer.
+- **Links you click** open in your browser like any link. The review prompt and Report a bug open web pages only when you click them.
+- **Obsidian itself and other plugins**, which have their own network behavior (for example Obsidian's update check and Sync).
 
 ## Getting Started + Setup
 

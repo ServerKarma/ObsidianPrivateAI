@@ -1,4 +1,5 @@
 import { ItemView, WorkspaceLeaf, MarkdownRenderer, Notice, TFile, setIcon } from 'obsidian';
+import { blockRemoteContent, stripRemoteResources } from './remoteContent';
 import { LLMService, createLLMService, ServerStatus } from '../services/LLMService';
 import { setupInstructions, welcomeNoModelsMessage } from '../services/modelGuidance';
 import { PiChatAgent, ChatAgentEvent } from '../agent/pi/PiChatAgent';
@@ -614,13 +615,15 @@ export class ChatView extends ItemView {
 		}
 
 		responseEl.empty();
+		// Model output must not make Obsidian fetch anything (see remoteContent.ts).
 		await MarkdownRenderer.render(
 			this.app,
-			message.content,
+			blockRemoteContent(message.content),
 			responseEl,
 			'',
 			this
 		);
+		stripRemoteResources(responseEl);
 
 		if (message.isStreaming) {
 			responseEl.createEl('span', {
@@ -801,11 +804,12 @@ export class ChatView extends ItemView {
 			});
 			await MarkdownRenderer.render(
 				this.app,
-				line,
+				blockRemoteContent(line),
 				lineEl,
 				'',
 				this
 			);
+			stripRemoteResources(lineEl);
 		}
 
 		if (!state.expanded) {

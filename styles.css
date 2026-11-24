@@ -1057,3 +1057,8 @@
 	color: var(--text-muted);
 	text-decoration: underline;
 }
+
+.local-llm-remote-server-warning {
+	margin-top: 6px;
+	color: var(--text-warning);
+}

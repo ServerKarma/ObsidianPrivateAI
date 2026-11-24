@@ -185,3 +185,4 @@ vector-index
 
 # Agent image OCR cache (plugin data)
 image-text-cache.json
+main.meta.json

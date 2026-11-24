@@ -218,6 +218,12 @@ describe('local model config', () => {
 		expect(model.compat).toMatchObject({ supportsDeveloperRole: false, supportsStore: false, maxTokensField: 'max_tokens' });
 	});
 
+	it('refuses an empty or non-http server URL so the OpenAI client never falls back to api.openai.com', () => {
+		for (const apiEndpoint of ['', '   ', '/chat/completions', 'localhost:1234/v1']) {
+			expect(() => buildLocalModel({ ...SETTINGS, apiEndpoint }, 'm')).toThrow(/server URL/);
+		}
+	});
+
 	it('uses the context window LM Studio reports and leaves the reply length to the model', () => {
 		expect(buildLocalModel(SETTINGS, 'm', 32768)).toMatchObject({ contextWindow: 32768, maxTokens: 0 });
 		expect(buildLocalModel(SETTINGS, 'm')).toMatchObject({ contextWindow: FALLBACK_CONTEXT_WINDOW });

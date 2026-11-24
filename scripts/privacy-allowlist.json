@@ -1,0 +1,102 @@
+{
+  "$comment": "What scripts/privacy-scan.mjs allows in the shipped main.js. Every entry says why it can't send anything off the device. Adding an entry is a privacy decision: review the code first, and say in the PR why it is safe.",
+  "packages": {
+    "@mariozechner/pi-ai": "Pi harness model layer. Only its openai-completions provider is bundled (other providers and the cloud model catalog are stubbed in esbuild.config.mjs); it talks to the model built in src/agent/pi/PiChatAgent.ts, whose base URL is the user's server URL.",
+    "@mariozechner/pi-agent-core": "Pi agent loop. No network code of its own; calls the pi-ai stream function.",
+    "@modelcontextprotocol/sdk": "Built-in MCP server and client, joined by the in-memory transport only (no HTTP, SSE or stdio transport is bundled).",
+    "openai": "HTTP client pi-ai uses for OpenAI-compatible servers. Sends only to the baseURL it is given (the user's server URL; PiChatAgent refuses an empty one, which would fall back to api.openai.com).",
+    "typebox": "Tool schemas. No network code.",
+    "ajv": "JSON schema validation for MCP. Never configured with loadSchema, so it never fetches remote $refs.",
+    "ajv-formats": "Format validators for ajv. Regexes only.",
+    "zod": "Schema library used by the MCP SDK. No network code.",
+    "zod-to-json-schema": "Schema conversion. No network code.",
+    "fast-uri": "URI parsing for ajv. No network code.",
+    "fast-deep-equal": "Object comparison. No network code.",
+    "json-schema-traverse": "Schema walking for ajv. No network code.",
+    "partial-json": "Parses streamed tool-call JSON. No network code."
+  },
+  "externals": {
+    "obsidian": "The Obsidian API. Its requestUrl is only called from src/services/LLMService.ts with the user's server URL.",
+    "node:fs": "pi-ai env-api-keys.js: existsSync for local cloud credential files and a Bun-only /proc/self/environ read. Local file reads; the plugin always passes its own API key so these paths aren't used for requests.",
+    "node:os": "pi-ai env-api-keys.js: homedir() for the same local credential check. No network.",
+    "node:path": "pi-ai env-api-keys.js: join() for the same local credential check. No network."
+  },
+  "networkApis": {
+    "node_modules/openai/client.mjs": {
+      "apis": [
+        "fetch"
+      ],
+      "reason": "Sends chat requests to the configured baseURL (the user's local server)."
+    },
+    "node_modules/openai/core/streaming.mjs": {
+      "apis": [
+        "fetch"
+      ],
+      "reason": "Reads the streamed response of that same request."
+    },
+    "node_modules/openai/internal/errors.mjs": {
+      "apis": [
+        "fetch"
+      ],
+      "reason": "Error class names only."
+    },
+    "node_modules/openai/internal/shims.mjs": {
+      "apis": [
+        "fetch"
+      ],
+      "reason": "Picks globalThis.fetch for the client above."
+    },
+    "node_modules/openai/internal/uploads.mjs": {
+      "apis": [
+        "fetch"
+      ],
+      "reason": "Type checks for Response objects; the plugin never uploads files."
+    },
+    "src/services/LLMService.ts": {
+      "apis": [
+        "fetch",
+        "requestUrl"
+      ],
+      "reason": "Model list and status checks against the user's server URL only. 'fetch' appears in error-message text."
+    },
+    "src/main.ts": {
+      "apis": [
+        "window.open"
+      ],
+      "reason": "Opens the review page, the GitHub repo or the bug report page in the user's browser, only when they click those buttons."
+    },
+    "node_modules/@mariozechner/pi-ai/dist/env-api-keys.js": {
+      "apis": [
+        "dynamic import"
+      ],
+      "reason": "import(specifier) where the specifier is one of the constants node:fs, node:os, node:path (checked under externals)."
+    },
+    "node_modules/@mariozechner/pi-ai/dist/providers/register-builtins.js": {
+      "apis": [
+        "dynamic import"
+      ],
+      "reason": "import('./amazon-bedrock.js') for the AWS Bedrock provider, only when a model's api is bedrock-converse-stream. The plugin's model is always openai-completions, and that file is not shipped next to main.js, so the import can't load anything."
+    }
+  },
+  "hosts": {
+    "localhost": "Default local server URL.",
+    "github.com": "Links the user can click (bug report, repo, help text) and MCP SDK doc strings. Nothing is fetched.",
+    "www.obsidianstats.com": "Review link in the review prompt; opens only on the user's click.",
+    "lmstudio.ai": "Setup instructions text telling the user where to get LM Studio.",
+    "api.openai.com": "openai client's default baseURL. Never used: PiChatAgent always passes an explicit http(s) server URL and refuses an empty one.",
+    "help.openai.com": "Text in openai error messages.",
+    "platform.openai.com": "Text in openai deprecation messages.",
+    "docs.expo.dev": "Text in an openai error message.",
+    "example.com": "Example strings in MCP SDK and typebox.",
+    "json-schema.org": "JSON schema $schema identifiers. Identifiers only, never fetched.",
+    "raw.githubusercontent.com": "ajv's $data meta-schema $id. An identifier, never fetched.",
+    "tools.ietf.org": "Comments in ajv-formats.",
+    "www.w3.org": "Comments in ajv-formats.",
+    "stackoverflow.com": "Comments in ajv-formats.",
+    "gist.github.com": "Comments in ajv-formats.",
+    "mathiasbynens.be": "Comments in ajv-formats.",
+    "spec.openapis.org": "Comments in ajv-formats.",
+    "www.safaribooksonline.com": "Comments in ajv-formats."
+  },
+  "telemetry": {}
+}

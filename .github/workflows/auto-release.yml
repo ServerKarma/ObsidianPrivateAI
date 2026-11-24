@@ -62,6 +62,11 @@ jobs:
         if: steps.version.outputs.skip != 'true'
         run: npm test
 
+      # Never publish a build that can reach anything but the user's own server.
+      - name: Privacy scan
+        if: steps.version.outputs.skip != 'true'
+        run: npm run privacy:scan
+
       - name: Commit the version bump
         if: steps.version.outputs.skip != 'true' && steps.version.outputs.bumped == 'true'
         env:

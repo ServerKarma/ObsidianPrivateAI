@@ -35,6 +35,21 @@ streamOpenAICodexResponses = fail, streamSimpleOpenAICodexResponses = fail, stre
 	}
 };
 
+// pi-ai's catalog of cloud models (every provider's model ids and cloud base URLs) is
+// loaded for its side effect even though the plugin never looks a model up in it: the
+// plugin builds its own model pointed at the local server. Replacing it with an empty
+// catalog keeps ~500 KB of cloud endpoints out of main.js.
+const stubPiModelCatalog = {
+	name: 'stub-pi-model-catalog',
+	setup(build) {
+		build.onResolve({ filter: /^\.\/models\.generated\.js$/ }, (args) => {
+			if (!args.importer.replace(/\\/g, '/').includes('@mariozechner/pi-ai/dist/')) return undefined;
+			return { path: args.path, namespace: 'pi-model-catalog-stub' };
+		});
+		build.onLoad({ filter: /.*/, namespace: 'pi-model-catalog-stub' }, () => ({ contents: 'export const MODELS = {};', loader: 'js' }));
+	}
+};
+
 const buildOptions = {
 	banner: {
 		js: banner,
@@ -67,7 +82,9 @@ const buildOptions = {
 	loader: {
 		".wasm": "binary",
 	},
-	plugins: [stubUnusedPiProviders],
+	plugins: [stubUnusedPiProviders, stubPiModelCatalog],
+	// Read by scripts/privacy-scan.mjs to see which package each part of main.js came from.
+	metafile: prod,
 };
 
 if (!prod) {
@@ -77,5 +94,6 @@ if (!prod) {
 	console.log('Watching for changes...');
 } else {
 	// Production build
-	await esbuild.build(buildOptions);
+	const result = await esbuild.build(buildOptions);
+	fs.writeFileSync('main.meta.json', JSON.stringify(result.metafile));
 } 

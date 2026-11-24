@@ -66,12 +66,18 @@ export function baseUrlFromEndpoint(endpoint: string): string {
 
 /** An OpenAI-compatible Pi model for a local server (LM Studio, Ollama, llama.cpp, ...). */
 export function buildLocalModel(settings: PiChatSettings, modelId: string, contextWindow = FALLBACK_CONTEXT_WINDOW): Model<'openai-completions'> {
+	const baseUrl = baseUrlFromEndpoint(settings.apiEndpoint);
+	// The OpenAI client Pi uses falls back to api.openai.com when the base URL is empty,
+	// so never hand it anything but an explicit http(s) server address.
+	if (!/^https?:\/\/[^/]/i.test(baseUrl)) {
+		throw new ChatAgentError('Set the server URL in the Private AI settings, for example http://localhost:1234/v1/chat/completions.');
+	}
 	return {
 		id: modelId,
 		name: modelId,
 		api: 'openai-completions',
 		provider: 'local',
-		baseUrl: baseUrlFromEndpoint(settings.apiEndpoint),
+		baseUrl,
 		reasoning: false,
 		input: ['text'],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
