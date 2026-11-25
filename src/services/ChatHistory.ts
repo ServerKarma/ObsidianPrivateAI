@@ -65,7 +65,7 @@ export function retentionCutoff(days: number, now = new Date()): Date | null {
 /** A short title from the first thing the user asked. */
 export function chatTitle(messages: readonly SavedChatMessage[]): string {
 	const first = messages.find((m) => m.role === 'user' && m.content.trim().length > 0);
-	if (!first) return 'New chat';
+	if (!first) return 'New Chat';
 	const line = first.content.replace(/\s+/g, ' ').trim();
 	return line.length > TITLE_LENGTH ? line.slice(0, TITLE_LENGTH - 1) + '…' : line;
 }

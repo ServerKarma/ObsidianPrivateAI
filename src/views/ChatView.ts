@@ -148,7 +148,7 @@ export class ChatView extends ItemView {
 		// New chat sits on the right
 		const newChatButton = headerButtons.createEl('button', {
 			cls: 'local-llm-new-chat-button',
-			text: 'New chat',
+			text: 'New Chat',
 			attr: { 'aria-label': 'Start new chat', 'type': 'button' }
 		});
 		newChatButton.addEventListener('click', async () => {

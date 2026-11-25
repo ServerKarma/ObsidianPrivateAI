@@ -87,7 +87,7 @@ describe('ChatHistory', () => {
   });
 
   it('titles a chat from the first question and makes sortable ids', () => {
-    expect(chatTitle([])).toBe('New chat');
+    expect(chatTitle([])).toBe('New Chat');
     expect(chatTitle([{ id: '1', role: 'user', content: '  When did I\nreplace the heater? ', timestamp: '' }])).toBe('When did I replace the heater?');
     expect(chatTitle([{ id: '1', role: 'user', content: 'x'.repeat(100), timestamp: '' }])).toHaveLength(60);
     expect(newChatId(new Date('2026-11-20T01:02:03.456Z'))).toMatch(/^20261120T010203Z-[a-z0-9]+$/);
