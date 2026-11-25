@@ -102,9 +102,9 @@ describe('Obsidian chat smoke test', () => {
     expect(content).not.toContain('Private AI chat');
     expect(view.containerEl.querySelector('.local-llm-chat-header h4')).toBeNull();
     expect(view.containerEl.querySelector('.local-llm-new-chat-button')).not.toBeNull();
-    // Settings on the left, New chat on the right.
+    // Settings on the left, History and New chat on the right.
     const buttons = [...view.containerEl.querySelectorAll('.local-llm-header-buttons > button')].map((b) => b.className);
-    expect(buttons).toEqual(['local-llm-settings-button', 'local-llm-new-chat-button']);
+    expect(buttons).toEqual(['local-llm-settings-button', 'local-llm-history-button', 'local-llm-new-chat-button']);
     // A working server gets no greeting bubble; the hint lives in the message box.
     expect(content).not.toContain("What's on your mind?");
     expect(view.containerEl.querySelectorAll('.local-llm-message').length).toBe(0);
