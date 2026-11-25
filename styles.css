@@ -47,69 +47,42 @@
 	/* Important for flex child scrolling */
 }
 
-.local-llm-review-prompt {
-	margin: 10px 10px 0;
-	padding: 10px 12px;
-	border: 1px solid var(--background-modifier-border);
-	border-left: 3px solid var(--interactive-accent);
-	border-radius: 8px;
-	background: var(--background-secondary);
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: 10px;
-}
-
-.local-llm-review-prompt-text {
-	font-size: 13px;
-	color: var(--text-normal);
-}
-
-.local-llm-review-prompt-actions {
-	display: flex;
-	gap: 8px;
-	flex-shrink: 0;
-}
-
-.local-llm-review-prompt-hidden {
-	display: none;
-}
-
-.local-llm-review-prompt-visible {
-	display: flex;
-}
-
 .local-llm-message {
 	display: flex;
 	flex-direction: column;
-	padding: 10px;
-	border-radius: 8px;
-	max-width: 85%;
 	word-wrap: break-word;
 	position: relative;
 }
 
+/* The user's messages: a rounded bubble on the right. */
 .local-llm-message-user {
 	align-self: flex-end;
-	background-color: var(--interactive-accent);
-	color: var(--text-on-accent);
+	align-items: flex-end;
+	max-width: 85%;
+}
+
+.local-llm-message-bubble {
+	padding: 8px 14px;
+	border-radius: 18px;
+	background-color: var(--background-modifier-hover);
+	color: var(--text-normal);
+	white-space: pre-wrap;
 }
 
 .local-llm-message-user .local-llm-message-content {
+	margin-bottom: 0;
 	user-select: text !important;
 	-webkit-user-select: text !important;
 	cursor: text;
 }
 
+/* Assistant replies: inline text on the left, no bubble. */
 .local-llm-message-assistant {
-	align-self: flex-start;
-	background-color: var(--background-secondary);
-	border: 1px solid var(--background-modifier-border);
-	position: relative;
+	align-self: stretch;
+	align-items: stretch;
 }
 
 .local-llm-message-content {
-	margin-bottom: 5px;
 	line-height: 1.5;
 	user-select: text;
 	-webkit-user-select: text;
@@ -291,10 +264,39 @@
 	}
 }
 
+/* Row of actions under each message. It always takes up its height, and only its
+   opacity changes on hover, so hovering never moves anything. */
+.local-llm-message-actions {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	min-height: 28px;
+	margin-top: 2px;
+}
+
+.local-llm-message-user .local-llm-message-actions {
+	justify-content: flex-end;
+}
+
+/* Line the assistant's copy icon up with the left edge of the reply text. */
+.local-llm-message-assistant .local-llm-message-actions {
+	margin-left: -4px;
+}
+
 .local-llm-message-timestamp {
-	font-size: 0.8em;
-	opacity: 0.7;
-	align-self: flex-end;
+	font-size: var(--font-ui-smaller, 0.8em);
+	color: var(--text-faint);
+	opacity: 0;
+	transition: opacity 0.15s ease;
+}
+
+.local-llm-message-user .local-llm-message-timestamp {
+	order: -1;
+}
+
+.local-llm-message:hover .local-llm-message-timestamp,
+.local-llm-message:focus-within .local-llm-message-timestamp {
+	opacity: 1;
 }
 
 .local-llm-input-container {
@@ -521,7 +523,7 @@
 
 /* Responsive design */
 @media (max-width: 768px) {
-	.local-llm-message {
+	.local-llm-message-user {
 		max-width: 95%;
 	}
 
@@ -674,67 +676,41 @@
 	font-size: 11px;
 }
 
-/* Copy button for assistant messages */
+/* Copy button under each message */
 .local-llm-copy-button {
-	position: absolute;
-	top: 8px;
-	right: 8px;
-	background: var(--background-primary);
-	border: 1px solid var(--background-modifier-border);
-	border-radius: 4px;
-	padding: 4px;
-	cursor: pointer;
-	opacity: 0;
-	transition: opacity 0.2s ease, background-color 0.2s ease;
 	display: flex;
 	align-items: center;
 	justify-content: center;
-}
-
-.local-llm-message:hover .local-llm-copy-button {
-	opacity: 1;
+	width: 26px;
+	height: 26px;
+	padding: 4px;
+	background: transparent;
+	border: none;
+	box-shadow: none;
+	border-radius: var(--radius-s, 4px);
+	color: var(--text-muted);
+	cursor: pointer;
+	transition: opacity 0.15s ease, color 0.15s ease, background-color 0.15s ease;
 }
 
 .local-llm-copy-button:hover {
-	background-color: var(--background-secondary);
+	background-color: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+/* On the user's bubble the copy button appears only on hover (or keyboard focus). */
+.local-llm-message-user .local-llm-copy-button {
+	opacity: 0;
+}
+
+.local-llm-message-user:hover .local-llm-copy-button,
+.local-llm-message-user:focus-within .local-llm-copy-button,
+.local-llm-copy-button.copied {
+	opacity: 1;
 }
 
 .local-llm-copy-button.copied {
-	background-color: transparent !important;
-	/* Let pseudo handle background */
-	color: var(--text-on-accent);
-	opacity: 1 !important;
-	position: absolute;
-	/* Already absolute but reinforcing for pseudo */
-	z-index: 10;
-	overflow: hidden;
-	/* Ensure pseudo stays within border-radius */
-}
-
-.local-llm-copy-button.copied::before {
-	content: '';
-	position: absolute;
-	top: 0;
-	left: 0;
-	width: 100%;
-	height: 100%;
-	background-color: var(--background-primary);
-	/* Base opaque layer */
-	z-index: -2;
-}
-
-.local-llm-copy-button.copied::after {
-	content: '';
-	position: absolute;
-	top: 0;
-	left: 0;
-	width: 100%;
-	height: 100%;
-	background-color: var(--interactive-success);
-	/* Tint layer */
-	opacity: 1;
-	/* Ensure tint is visible */
-	z-index: -1;
+	color: var(--color-green, var(--interactive-success));
 }
 
 /* Refresh button for installation messages */
@@ -1109,4 +1085,79 @@
 .local-llm-history-button:hover {
 	background-color: var(--background-modifier-hover);
 	border-color: var(--interactive-accent);
+}
+
+/* Review request modal */
+.local-llm-review-modal {
+	max-width: 440px;
+	text-align: center;
+}
+
+.local-llm-review-modal .modal-content {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 8px 4px;
+}
+
+.local-llm-review-modal-stars {
+	font-size: 34px;
+	letter-spacing: 4px;
+	line-height: 1;
+	color: #f5b301;
+	margin-top: 4px;
+}
+
+.local-llm-review-modal-title {
+	margin: 4px 0 0;
+	font-size: 22px;
+}
+
+.local-llm-review-modal-body {
+	margin: 0;
+	color: var(--text-muted);
+	line-height: 1.5;
+}
+
+.local-llm-review-modal-actions {
+	display: flex;
+	flex-direction: column;
+	align-self: stretch;
+	gap: 8px;
+	margin-top: 12px;
+}
+
+.local-llm-review-modal-actions button {
+	width: 100%;
+	height: auto;
+	padding: 10px 16px;
+	font-size: 15px;
+}
+
+.local-llm-review-modal-primary {
+	font-weight: 600;
+}
+
+.local-llm-review-modal-footer {
+	display: flex;
+	justify-content: center;
+	gap: 16px;
+	margin-top: 6px;
+}
+
+.local-llm-review-modal-footer .local-llm-review-modal-link {
+	background: none;
+	border: none;
+	box-shadow: none;
+	padding: 4px;
+	height: auto;
+	font-size: 12px;
+	color: var(--text-faint);
+	cursor: pointer;
+}
+
+.local-llm-review-modal-footer .local-llm-review-modal-link:hover {
+	color: var(--text-muted);
+	text-decoration: underline;
 }

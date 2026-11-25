@@ -64,7 +64,8 @@ describe("Private AI agent in real Obsidian", function () {
             await plugin.saveSettings();
         }, llm.url);
         await browser.executeObsidianCommand("private-ai:open-local-llm-chat");
-        await browser.$('[data-type="local-llm-chat-view"] textarea.local-llm-input').waitForExist({ timeout: 10000 });
+        // On a slow CI machine the sidebar is still opening when the box exists; wait until it can be typed in.
+        await browser.$('[data-type="local-llm-chat-view"] textarea.local-llm-input').waitForClickable({ timeout: 20000 });
     });
 
     after(async function () {
@@ -73,6 +74,7 @@ describe("Private AI agent in real Obsidian", function () {
 
     async function ask(question: string): Promise<void> {
         const input = browser.$('[data-type="local-llm-chat-view"] textarea.local-llm-input');
+        await input.waitForClickable({ timeout: 20000 });
         await input.setValue(question);
         await browser.$('[data-type="local-llm-chat-view"] .local-llm-send-button').click();
     }
@@ -318,8 +320,9 @@ describe("Private AI agent in real Obsidian", function () {
                         return false;
                     }
                 }, width);
-                await browser.waitUntil(async () => !resized || (await browser.execute(() => window.innerWidth)) === width, { timeout: 5000 });
-                await browser.waitUntil(async () => (await browser.$$(".local-llm-exclusion-setting").length) === 2, { timeout: 5000 });
+                // Generous waits: resizing and re-laying out the settings window is slow on CI machines.
+                await browser.waitUntil(async () => !resized || (await browser.execute(() => window.innerWidth)) === width, { timeout: 15000, timeoutMsg: `the settings window never became ${width}px wide` });
+                await browser.waitUntil(async () => (await browser.$$(".local-llm-exclusion-setting").length) === 2, { timeout: 15000, timeoutMsg: "the exclusion settings never appeared" });
                 return browser.execute(() => Array.from(document.querySelectorAll(".local-llm-exclusion-setting")).map((row) => {
                     const r = row.getBoundingClientRect();
                     const t = row.querySelector("textarea")!.getBoundingClientRect();

@@ -1,9 +1,9 @@
 {
   "id": "private-ai",
   "name": "Private AI",
-  "version": "1.0.68",
+  "version": "1.0.77",
   "minAppVersion": "1.8.10",
-  "description": "Effortlessly chat with your notes using locally hosted AI.  Private by design, your notes never leave the device and use locally processing only.",
+  "description": "Chat with your notes using a local AI model. Private by design: your notes never leave your device.",
   "author": "GB",
   "authorUrl": "https://github.com/gabosgab/",
   "isDesktopOnly": true

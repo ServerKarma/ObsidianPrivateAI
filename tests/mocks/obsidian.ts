@@ -28,6 +28,33 @@ export class Plugin {
   addSettingTab() {}
 }
 
+export class Modal {
+  app: any;
+  modalEl: HTMLElement;
+  contentEl: HTMLElement;
+  isOpen = false;
+
+  constructor(app: any) {
+    this.app = app;
+    this.modalEl = document.createElement('div');
+    this.contentEl = document.createElement('div');
+    this.modalEl.appendChild(this.contentEl);
+  }
+
+  open() {
+    this.isOpen = true;
+    document.body.appendChild(this.modalEl);
+    (this as any).onOpen?.();
+  }
+
+  close() {
+    if (!this.isOpen) return;
+    this.isOpen = false;
+    this.modalEl.remove();
+    (this as any).onClose?.();
+  }
+}
+
 export class PluginSettingTab {
   app: any;
   plugin: any;

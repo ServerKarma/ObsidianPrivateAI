@@ -9,13 +9,13 @@ import { CleanupResult, removeLegacyEmbeddingFiles } from './services/LegacyEmbe
 import { CHAT_RETENTION_CHOICES, ChatHistory } from './services/ChatHistory';
 import '../styles.css';
 import manifest from '../manifest.json';
+import { ReviewModal, ReviewModalChoice } from './views/ReviewModal';
+import { GITHUB_REPO_URL, REVIEW_MODAL_DELAY_MS, REVIEW_PAGE_URL, shouldShowReviewPrompt } from './services/reviewPrompt';
 
 export const CHAT_VIEW_TYPE = 'local-llm-chat-view';
 
 export interface LocalLLMSettings {
 	apiEndpoint: string;
-	maxTokens: number;
-	temperature: number;
 	// User preferences appended to the agent's system prompt
 	systemPrompt: string;
 	// Model setting (optional - if not set, the first loaded chat model is used)
@@ -26,7 +26,6 @@ export interface LocalLLMSettings {
 	// Agent (Pi harness) settings
 	allowNoteChanges: boolean;
 	maxToolRounds: number;
-	contextWindow: number;
 	// Image processing settings
 	enableImageTextExtraction: boolean;
 	// Files the agent can't see
@@ -43,24 +42,23 @@ export interface LocalLLMSettings {
 	lastUsageStartTimestamp: number | null;
 	lastReviewPromptTimestamp: number | null;
 	reviewLinkClicked: boolean;
+	successfulChats: number;
+	successfulChatsAtLastReviewPrompt: number;
 }
 
 /** The pre-agent default prompt; replaced with an empty preference on load. */
 const LEGACY_DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant with access to the user's Obsidian vault. When provided with context from their notes, use that information to provide more accurate and relevant responses. Reference specific notes when appropriate, but focus on answering the user's question clearly and concisely.";
 
-/** Settings from the removed embedding/vector-store pipeline, dropped from data.json on load. */
-const REMOVED_SETTINGS = ['searchMaxResults', 'searchContextPercentage', 'searchThreshold', 'enableRAG', 'ragThreshold', 'ragMaxResults', 'embeddingEndpoint', 'embeddingModel', 'contextMode', 'mcpServerEnabled', 'mcpServerPort', 'mcpServerToken'];
+/** Settings that no longer exist (the embedding pipeline, the old MCP listener, and the model parameters LM Studio now decides), dropped from data.json on load. */
+const REMOVED_SETTINGS = ['searchMaxResults', 'searchContextPercentage', 'searchThreshold', 'enableRAG', 'ragThreshold', 'ragMaxResults', 'embeddingEndpoint', 'embeddingModel', 'contextMode', 'mcpServerEnabled', 'mcpServerPort', 'mcpServerToken', 'contextWindow', 'maxTokens', 'temperature'];
 
 export const DEFAULT_SETTINGS: LocalLLMSettings = {
 	apiEndpoint: 'http://localhost:1234/v1/chat/completions',
-	maxTokens: 10000,
-	temperature: 0.7,
 	systemPrompt: '',
 	enableDeveloperLogging: false,
 	// Read-only until the user turns this on (the agent asks the first time it wants to change a note)
 	allowNoteChanges: false,
 	maxToolRounds: 8,
-	contextWindow: 32768,
 	enableImageTextExtraction: true,
 	excludedFolders: [],
 	excludedFilePatterns: [],
@@ -70,13 +68,11 @@ export const DEFAULT_SETTINGS: LocalLLMSettings = {
 	usageTimeMs: 0,
 	lastUsageStartTimestamp: null,
 	lastReviewPromptTimestamp: null,
-	reviewLinkClicked: false
+	reviewLinkClicked: false,
+	successfulChats: 0,
+	successfulChatsAtLastReviewPrompt: 0
 };
 
-const REVIEW_PROMPT_THRESHOLD_MS = 60 * 60 * 1000;
-const REVIEW_PROMPT_REPEAT_MS = 24 * 60 * 60 * 1000;
-const REVIEW_PAGE_URL = 'https://www.obsidianstats.com/plugins/private-ai';
-const REVIEW_PROMPT_MESSAGE = 'Enjoying Private AI? A quick review helps others discover it';
 
 export default class LocalLLMPlugin extends Plugin {
 	settings: LocalLLMSettings;
@@ -86,7 +82,7 @@ export default class LocalLLMPlugin extends Plugin {
 	private llmService: any; // LLMService instance for image processing
 	private imageProcessing: AbortController | null = null;
 	private usageTrackingIntervalId: number | null = null;
-	private reviewPromptPending = false;
+	private reviewModalOpen = false;
 
 	async onload() {
 		LoggingUtility.initialize();
@@ -102,8 +98,6 @@ export default class LocalLLMPlugin extends Plugin {
 		this.llmService = createLLMService({
 			apiEndpoint: this.settings.apiEndpoint,
 			apiKey: this.settings.apiKey,
-			maxTokens: this.settings.maxTokens,
-			temperature: this.settings.temperature,
 			systemPrompt: this.settings.systemPrompt,
 			model: this.settings.model
 		});
@@ -226,14 +220,11 @@ export default class LocalLLMPlugin extends Plugin {
 				apiEndpoint: this.settings.apiEndpoint,
 				apiKey: this.settings.apiKey,
 				model: this.settings.model,
-				maxTokens: this.settings.maxTokens,
-				temperature: this.settings.temperature,
 				systemPrompt: this.settings.systemPrompt,
-				maxToolRounds: this.settings.maxToolRounds,
-				contextWindow: this.settings.contextWindow
+				maxToolRounds: this.settings.maxToolRounds
 			}),
 			loadTools: () => this.agentRuntime.loadAgentTools(),
-			resolveModelId: async () => {
+			resolveModel: async () => {
 				// Checked before every message, so the user gets instructions instead of a raw network error.
 				const { createLLMService } = await import('./services/LLMService');
 				const status = await createLLMService({
@@ -245,7 +236,8 @@ export default class LocalLLMPlugin extends Plugin {
 				if (status.state === 'no-models') throw new ChatAgentError(noModelsMessage());
 				if (status.state !== 'ready') return undefined;
 				if (status.model.toolUse === false) throw new ChatAgentError(noToolSupportMessage(status.model.id));
-				return status.model.id;
+				// The context length LM Studio loaded the model with; unknown until it is loaded.
+				return { id: status.model.id, contextWindow: status.model.contextLength };
 			}
 		});
 	}
@@ -279,8 +271,6 @@ export default class LocalLLMPlugin extends Plugin {
 			}
 			const extractor = new ImageTextExtractor(createLLMService({
 				...connection,
-				maxTokens: this.settings.maxTokens,
-				temperature: this.settings.temperature,
 				systemPrompt: this.settings.systemPrompt
 			}), this.app);
 			// Servers that don't report capabilities are asked to describe a test image instead.
@@ -343,8 +333,6 @@ export default class LocalLLMPlugin extends Plugin {
 			this.llmService = createLLMService({
 				apiEndpoint: this.settings.apiEndpoint,
 				apiKey: this.settings.apiKey,
-				maxTokens: this.settings.maxTokens,
-				temperature: this.settings.temperature,
 				systemPrompt: this.settings.systemPrompt,
 				model: this.settings.model
 			});
@@ -358,14 +346,14 @@ export default class LocalLLMPlugin extends Plugin {
 		}
 
 		this.usageTrackingIntervalId = window.setInterval(() => {
-			void this.updateUsageAndMaybeShowReviewPrompt();
+			void this.updateUsage();
 		}, 60 * 1000);
 		this.registerInterval(this.usageTrackingIntervalId);
 
-		void this.updateUsageAndMaybeShowReviewPrompt();
+		void this.updateUsage();
 	}
 
-	private async updateUsageAndMaybeShowReviewPrompt() {
+	private async updateUsage() {
 		const now = Date.now();
 		const lastStart = this.settings.lastUsageStartTimestamp;
 
@@ -375,28 +363,6 @@ export default class LocalLLMPlugin extends Plugin {
 
 		this.settings.lastUsageStartTimestamp = now;
 		await this.saveData(this.settings);
-
-		if (this.shouldShowReviewPrompt(now)) {
-			this.settings.lastReviewPromptTimestamp = now;
-			await this.saveData(this.settings);
-			this.showReviewPromptInChat();
-		}
-	}
-
-	private shouldShowReviewPrompt(now: number): boolean {
-		if (this.settings.reviewLinkClicked) {
-			return false;
-		}
-
-		if (this.settings.usageTimeMs < REVIEW_PROMPT_THRESHOLD_MS) {
-			return false;
-		}
-
-		if (this.settings.lastReviewPromptTimestamp === null) {
-			return true;
-		}
-
-		return now - this.settings.lastReviewPromptTimestamp >= REVIEW_PROMPT_REPEAT_MS;
 	}
 
 	private async flushUsageTracking() {
@@ -411,58 +377,41 @@ export default class LocalLLMPlugin extends Plugin {
 		await this.saveData(this.settings);
 	}
 
-	private showReviewPromptInChat() {
-		const injected = this.notifyChatViewsOfReviewPrompt();
-		if (injected) {
-			return;
-		}
-
-		// Queue for next chat view render and open the chat view for immediate visibility.
-		this.reviewPromptPending = true;
-		void this.activateView().then(() => {
-			const wasInjected = this.notifyChatViewsOfReviewPrompt();
-			if (wasInjected) {
-				this.reviewPromptPending = false;
-			}
-		});
-	}
-
-	openReviewPromptManually() {
-		this.showReviewPromptInChat();
-	}
-
-	async markReviewLinkClicked() {
-		if (this.settings.reviewLinkClicked) {
-			return;
-		}
-
-		this.settings.reviewLinkClicked = true;
-		this.reviewPromptPending = false;
+	/**
+	 * Called by the chat view each time an answer finishes without an error. The review ask is
+	 * tied to these moments so it only ever follows a good experience.
+	 */
+	async recordSuccessfulChat(): Promise<void> {
+		this.settings.successfulChats = (this.settings.successfulChats ?? 0) + 1;
 		await this.saveData(this.settings);
-	}
-
-	consumePendingReviewPrompt(chatView: ChatView) {
-		if (!this.reviewPromptPending) {
+		if (this.reviewModalOpen || !shouldShowReviewPrompt(this.settings, Date.now())) {
 			return;
 		}
-
-		chatView.showReviewPromptBanner(REVIEW_PROMPT_MESSAGE, REVIEW_PAGE_URL);
-		this.reviewPromptPending = false;
+		window.setTimeout(() => this.showReviewModal(), REVIEW_MODAL_DELAY_MS);
 	}
 
-	private notifyChatViewsOfReviewPrompt(): boolean {
-		const leaves = this.app.workspace.getLeavesOfType(CHAT_VIEW_TYPE);
-		let injected = false;
+	/** Opens the review modal now. Also used by the settings button for testing. */
+	showReviewModal(): void {
+		if (this.reviewModalOpen) return;
+		this.reviewModalOpen = true;
+		this.settings.lastReviewPromptTimestamp = Date.now();
+		this.settings.successfulChatsAtLastReviewPrompt = this.settings.successfulChats ?? 0;
+		void this.saveData(this.settings);
+		new ReviewModal(this.app, this.settings.successfulChats ?? 0, (choice) => {
+			this.reviewModalOpen = false;
+			void this.handleReviewChoice(choice);
+		}).open();
+	}
 
-		leaves.forEach(leaf => {
-			const chatView = leaf.view as ChatView;
-			if (chatView && typeof chatView.showReviewPromptBanner === 'function') {
-				chatView.showReviewPromptBanner(REVIEW_PROMPT_MESSAGE, REVIEW_PAGE_URL);
-				injected = true;
-			}
-		});
-
-		return injected;
+	private async handleReviewChoice(choice: ReviewModalChoice): Promise<void> {
+		if (choice === 'later') {
+			// Snoozed: it comes back after more days and more answered chats.
+			return;
+		}
+		if (choice === 'review') window.open(REVIEW_PAGE_URL, '_blank');
+		if (choice === 'star') window.open(GITHUB_REPO_URL, '_blank');
+		this.settings.reviewLinkClicked = true;
+		await this.saveData(this.settings);
 	}
 
 	async activateView() {
@@ -590,33 +539,6 @@ class LocalLLMSettingTab extends PluginSettingTab {
 			this.loadAvailableModels();
 		}, 0);
 
-		addStyledSlider(
-			new Setting(containerEl)
-				.setName('Max tokens')
-				.setDesc('Maximum number of tokens in the response'),
-			{
-				min: 100, max: 40000, step: 100, value: this.plugin.settings.maxTokens,
-				onChange: async (value) => {
-					this.plugin.settings.maxTokens = value;
-					await this.plugin.saveSettings();
-				}
-			}
-		);
-
-		addStyledSlider(
-			new Setting(containerEl)
-				.setName('Temperature')
-				.setDesc('Controls randomness in the response (0 = deterministic, 1 = very random) 0.7 is recommended for most models'),
-			{
-				min: 0, max: 1, step: 0.01, value: this.plugin.settings.temperature,
-				onChange: async (value) => {
-					this.plugin.settings.temperature = value;
-					await this.plugin.saveSettings();
-				},
-				format: (v) => v.toFixed(2)
-			}
-		);
-
 		// System prompt setting with textarea below
 		new Setting(containerEl)
 			.setName('What personal preferences should be considered in responses?')
@@ -656,19 +578,6 @@ class LocalLLMSettingTab extends PluginSettingTab {
 				min: 1, max: 20, step: 1, value: this.plugin.settings.maxToolRounds,
 				onChange: async (value) => {
 					this.plugin.settings.maxToolRounds = value;
-					await this.plugin.saveSettings();
-				}
-			}
-		);
-
-		addStyledSlider(
-			new Setting(containerEl)
-				.setName('Context window')
-				.setDesc('The model\'s context length in tokens (match the value you load the model with in LM Studio). Older messages are dropped to fit.'),
-			{
-				min: 4096, max: 131072, step: 4096, value: this.plugin.settings.contextWindow,
-				onChange: async (value) => {
-					this.plugin.settings.contextWindow = value;
 					await this.plugin.saveSettings();
 				}
 			}
@@ -767,12 +676,12 @@ class LocalLLMSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Review prompt')
-			.setDesc('Inject the review prompt into the chat window for testing.')
+			.setDesc('Show the review request now. It also appears on its own after you have used the chat for a while.')
 			.addButton(button => button
 				.setButtonText('Show review prompt')
 				.setCta()
 				.onClick(() => {
-					this.plugin.openReviewPromptManually();
+					this.plugin.showReviewModal();
 				}));
 
 		// Add developer logging setting
@@ -802,8 +711,6 @@ class LocalLLMSettingTab extends PluginSettingTab {
 				const llmService = createLLMService({
 					apiEndpoint: this.plugin.settings.apiEndpoint,
 					apiKey: this.plugin.settings.apiKey,
-					maxTokens: this.plugin.settings.maxTokens,
-					temperature: this.plugin.settings.temperature,
 					systemPrompt: this.plugin.settings.systemPrompt,
 					model: this.plugin.settings.model
 				});

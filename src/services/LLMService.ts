@@ -102,7 +102,8 @@ export interface LMStudioRestModel {
 	key?: string;
 	id?: string;
 	display_name?: string;
-	loaded_instances?: Array<{ id?: string }>;
+	loaded_instances?: Array<{ id?: string; config?: { context_length?: number } | null }>;
+	max_context_length?: number | null;
 	size_bytes?: number;
 	capabilities?: { vision?: boolean; trained_for_tool_use?: boolean } | null;
 }
@@ -117,6 +118,8 @@ interface ListedModel {
 	vision?: boolean;
 	toolUse?: boolean;
 	sizeBytes?: number;
+	/** Context length (tokens) the model is loaded with; only LM Studio's REST API reports it. */
+	contextLength?: number;
 }
 
 /** A chat model the server offers. Capabilities are undefined when the server doesn't report them. */
@@ -125,6 +128,8 @@ export interface ChatModelInfo {
 	loaded: boolean;
 	vision?: boolean;
 	toolUse?: boolean;
+	/** The context length (tokens) the model is loaded with, when the server reports it. */
+	contextLength?: number;
 }
 
 /**
@@ -211,10 +216,11 @@ export class LLMService {
 
 			const request: ChatRequest = {
 				messages,
-				max_tokens: this.config.maxTokens || 1000,
-				temperature: this.config.temperature || 0.7,
 				stream: false
 			};
+			// Reply length and sampling are left to the model's settings in LM Studio unless set here.
+			if (this.config.maxTokens) request.max_tokens = this.config.maxTokens;
+			if (this.config.temperature !== undefined) request.temperature = this.config.temperature;
 
 			// Add model to request if specified
 			if (this.config.model) {
@@ -269,10 +275,11 @@ export class LLMService {
 
 			const request: ChatRequest = {
 				messages,
-				max_tokens: this.config.maxTokens || 1000,
-				temperature: this.config.temperature || 0.7,
 				stream: false
 			};
+			// Reply length and sampling are left to the model's settings in LM Studio unless set here.
+			if (this.config.maxTokens) request.max_tokens = this.config.maxTokens;
+			if (this.config.temperature !== undefined) request.temperature = this.config.temperature;
 
 			if (this.config.model) {
 				request.model = this.config.model;
@@ -381,7 +388,7 @@ export class LLMService {
 		if (!catalog.listed) return { state: 'unknown' };
 		const chatModels = catalog.models.filter(isChatModel);
 		if (chatModels.length === 0) return { state: 'no-models' };
-		const info = (m: ListedModel): ChatModelInfo => ({ id: m.id, loaded: !!m.loaded, vision: m.vision, toolUse: m.toolUse });
+		const info = (m: ListedModel): ChatModelInfo => ({ id: m.id, loaded: !!m.loaded, vision: m.vision, toolUse: m.toolUse, contextLength: m.contextLength });
 		const configured = this.config.model?.trim();
 		if (configured) {
 			const found = chatModels.find((m) => m.id === configured || m.key === configured);
@@ -525,6 +532,7 @@ export class LLMService {
 			lmStudioPayload.models
 				.map(model => {
 					const instances = Array.isArray(model?.loaded_instances) ? model.loaded_instances : [];
+					const contextLength = instances[0]?.config?.context_length;
 					return {
 						// A loaded instance's id is what the chat endpoint routes to without a reload.
 						id: instances[0]?.id || model?.key || model?.id || model?.display_name || '',
@@ -533,7 +541,9 @@ export class LLMService {
 						loaded: instances.length > 0,
 						vision: model?.capabilities?.vision,
 						toolUse: model?.capabilities?.trained_for_tool_use,
-						sizeBytes: model?.size_bytes
+						sizeBytes: model?.size_bytes,
+						// Only a loaded instance has a fixed context; an unloaded model gets whatever LM Studio loads it with.
+						contextLength: typeof contextLength === 'number' && contextLength > 0 ? contextLength : undefined
 					};
 				})
 				.forEach(model => {

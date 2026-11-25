@@ -47,8 +47,6 @@ interface ThinkingPanelElements {
 
 interface LLMConfig {
 	apiEndpoint: string;
-	maxTokens: number;
-	temperature: number;
 	systemPrompt?: string;
 	model?: string;
 	apiKey?: string;
@@ -70,7 +68,6 @@ const INPUT_PLACEHOLDER = `What's on your mind?`;
 export class ChatView extends ItemView {
 	private messages: ChatMessage[] = [];
 	private messageContainer: HTMLElement;
-	private reviewPromptBanner: HTMLElement;
 	private inputContainer: HTMLElement;
 	private inputElement: HTMLTextAreaElement;
 	private sendButton: HTMLButtonElement;
@@ -171,11 +168,6 @@ export class ChatView extends ItemView {
 			cls: 'local-llm-history local-llm-history-hidden'
 		});
 
-		// Create inline review prompt area (hidden by default).
-		this.reviewPromptBanner = chatContainer.createEl('div', {
-			cls: 'local-llm-review-prompt local-llm-review-prompt-hidden'
-		});
-
 		// Create input container (fixed at bottom)
 		this.inputContainer = chatContainer.createEl('div', {
 			cls: 'local-llm-input-container'
@@ -218,10 +210,6 @@ export class ChatView extends ItemView {
 		// Obsidian waits for onOpen while it loads the workspace, so the server check must not
 		// be awaited here: a slow or hung server would hold up the whole app.
 		await this.showWelcome();
-
-		if (typeof this.plugin.consumePendingReviewPrompt === 'function') {
-			this.plugin.consumePendingReviewPrompt(this);
-		}
 	}
 
 	async onClose() {
@@ -234,8 +222,6 @@ export class ChatView extends ItemView {
 		LoggingUtility.log('Updating LLM service with settings:', settings);
 		this.llmService = createLLMService({
 			apiEndpoint: settings.apiEndpoint,
-			maxTokens: settings.maxTokens,
-			temperature: settings.temperature,
 			systemPrompt: settings.systemPrompt,
 			model: settings.model,
 			apiKey: settings.apiKey
@@ -246,52 +232,9 @@ export class ChatView extends ItemView {
 		LoggingUtility.log('Updating LLM service with config:', config);
 		this.llmService = createLLMService({
 			apiEndpoint: config.apiEndpoint,
-			maxTokens: config.maxTokens,
-			temperature: config.temperature,
 			systemPrompt: config.systemPrompt,
 			model: config.model,
 			apiKey: config.apiKey
-		});
-	}
-
-	showReviewPromptBanner(message: string, reviewUrl: string): void {
-		this.reviewPromptBanner.empty();
-		this.reviewPromptBanner.removeClass('local-llm-review-prompt-hidden');
-		this.reviewPromptBanner.addClass('local-llm-review-prompt-visible');
-
-		const textEl = this.reviewPromptBanner.createEl('span', {
-			cls: 'local-llm-review-prompt-text',
-			text: message
-		});
-		textEl.setAttribute('role', 'status');
-
-		const actionContainer = this.reviewPromptBanner.createEl('div', {
-			cls: 'local-llm-review-prompt-actions'
-		});
-
-		const reviewButton = actionContainer.createEl('button', {
-			text: 'Leave a review',
-			cls: 'mod-cta',
-			attr: { type: 'button' }
-		});
-		reviewButton.addEventListener('click', async () => {
-			if (typeof this.plugin.markReviewLinkClicked === 'function') {
-				await this.plugin.markReviewLinkClicked();
-			}
-			window.open(reviewUrl, '_blank');
-			this.reviewPromptBanner.empty();
-			this.reviewPromptBanner.removeClass('local-llm-review-prompt-visible');
-			this.reviewPromptBanner.addClass('local-llm-review-prompt-hidden');
-		});
-
-		const dismissButton = actionContainer.createEl('button', {
-			text: 'Dismiss',
-			attr: { type: 'button' }
-		});
-		dismissButton.addEventListener('click', () => {
-			this.reviewPromptBanner.empty();
-			this.reviewPromptBanner.removeClass('local-llm-review-prompt-visible');
-			this.reviewPromptBanner.addClass('local-llm-review-prompt-hidden');
 		});
 	}
 
@@ -410,6 +353,9 @@ export class ChatView extends ItemView {
 			await this.finalizeStreamingMessage(assistantMessage.id);
 			finish();
 			this.saveChat();
+			if (typeof this.plugin.recordSuccessfulChat === 'function') {
+				void this.plugin.recordSuccessfulChat();
+			}
 		} catch (error) {
 			closeThinking();
 			await renderChain;
@@ -967,7 +913,11 @@ export class ChatView extends ItemView {
 			attr: { 'data-message-id': message.id }
 		});
 
-		const contentEl = messageEl.createEl('div', {
+		// Only the user's messages sit in a bubble; assistant replies are inline text.
+		const contentParent = message.role === 'user'
+			? messageEl.createEl('div', { cls: 'local-llm-message-bubble' })
+			: messageEl;
+		const contentEl = contentParent.createEl('div', {
 			cls: 'local-llm-message-content'
 		});
 
@@ -1017,28 +967,6 @@ export class ChatView extends ItemView {
 		} else {
 			// Plain text for user messages
 			contentEl.setText(message.content);
-		}
-
-		// Add copy button for all non-streaming messages (both user and assistant)
-		if (!message.isStreaming) {
-			const copyButton = messageEl.createEl('button', {
-				cls: 'local-llm-copy-button',
-				attr: { 'aria-label': 'Copy message content', 'type': 'button' }
-			});
-			setIcon(copyButton, 'copy');
-
-			copyButton.addEventListener('click', async () => {
-				await navigator.clipboard.writeText(message.content);
-
-				// Show success feedback
-				setIcon(copyButton, 'check');
-				copyButton.classList.add('copied');
-
-				setTimeout(() => {
-					setIcon(copyButton, 'copy');
-					copyButton.classList.remove('copied');
-				}, 1000);
-			});
 		}
 
 		// Show used notes information for assistant messages
@@ -1112,7 +1040,34 @@ export class ChatView extends ItemView {
 			});
 		}
 
-		const timestampEl = messageEl.createEl('div', {
+		// Actions row under the message. Its height is always reserved, so showing the
+		// user bubble's copy button on hover never shifts the layout.
+		const actionsEl = messageEl.createEl('div', {
+			cls: 'local-llm-message-actions'
+		});
+
+		if (!message.isStreaming) {
+			const copyButton = actionsEl.createEl('button', {
+				cls: 'clickable-icon local-llm-copy-button',
+				attr: { 'aria-label': 'Copy message', 'type': 'button' }
+			});
+			setIcon(copyButton, 'copy');
+
+			copyButton.addEventListener('click', async () => {
+				await navigator.clipboard.writeText(message.content);
+
+				// Brief confirmation, then back to the copy icon.
+				setIcon(copyButton, 'check');
+				copyButton.classList.add('copied');
+
+				setTimeout(() => {
+					setIcon(copyButton, 'copy');
+					copyButton.classList.remove('copied');
+				}, 1000);
+			});
+		}
+
+		const timestampEl = actionsEl.createEl('span', {
 			cls: 'local-llm-message-timestamp'
 		});
 
