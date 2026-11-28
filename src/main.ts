@@ -7,6 +7,7 @@ import { imagesUnavailableMessage, noModelsMessage, noToolSupportMessage, noVisi
 import { ImageTextExtractor } from './services/ImageTextExtractor';
 import { CleanupResult, removeLegacyEmbeddingFiles } from './services/LegacyEmbeddingCleanup';
 import { PromptTemplate } from './views/promptTemplates';
+import { PromptTemplatesModal } from './views/PromptTemplatesModal';
 import { CHAT_RETENTION_CHOICES, ChatHistory } from './services/ChatHistory';
 import '../styles.css';
 import manifest from '../manifest.json';
@@ -166,8 +167,19 @@ export default class LocalLLMPlugin extends Plugin {
 			}
 		});
 
+		this.addCommand({
+			id: 'manage-prompt-templates',
+			name: 'Manage prompt templates',
+			callback: () => this.openPromptTemplates()
+		});
+
 		// Add settings tab
 		this.addSettingTab(new LocalLLMSettingTab(this.app, this));
+	}
+
+	/** Opens the window for adding and editing the "/" prompt templates. */
+	openPromptTemplates(onClosed?: () => void): void {
+		new PromptTemplatesModal(this.app, this.settings.promptTemplates, () => this.saveSettings(), onClosed).open();
 	}
 
 	async onunload() {
@@ -836,53 +848,20 @@ class LocalLLMSettingTab extends PluginSettingTab {
 		}
 	}
 
-	/** Saved prompts the chat box offers when you type "/". */
+	/** Saved prompts the chat box offers when you type "/". They are edited in their own window. */
 	private displayPromptTemplates(containerEl: HTMLElement): void {
 		new Setting(containerEl).setName('Prompt templates').setHeading();
+		const names = this.plugin.settings.promptTemplates.map(t => t.name.trim()).filter(Boolean);
+		const summary = names.length === 0
+			? 'None yet.'
+			: `${names.length} saved: ${names.slice(0, 4).map(n => '/' + n).join(', ')}${names.length > 4 ? ', …' : ''}`;
 		new Setting(containerEl)
-			.setDesc('Type / in the chat box to pick one of these. The template\'s text goes in the message box, where you can edit it before sending.');
-
-		const templates = this.plugin.settings.promptTemplates;
-		templates.forEach((template, index) => {
-			const setting = new Setting(containerEl)
-				.addText(text => text
-					.setPlaceholder('Name, e.g. summarize')
-					.setValue(template.name)
-					.onChange(async (value) => {
-						// Names are typed after "/", so they can't hold spaces.
-						template.name = value.trim().replace(/\s+/g, '-');
-						await this.plugin.saveSettings();
-					}))
-				.addTextArea(text => text
-					.setPlaceholder('Summarize this note in five bullet points.')
-					.setValue(template.prompt)
-					.then((text) => {
-						text.inputEl.rows = 3;
-						text.inputEl.addClass('local-llm-template-textarea');
-					})
-					.onChange(async (value) => {
-						template.prompt = value;
-						await this.plugin.saveSettings();
-					}))
-				.addExtraButton(button => button
-					.setIcon('trash')
-					.setTooltip('Delete template')
-					.onClick(async () => {
-						templates.splice(index, 1);
-						await this.plugin.saveSettings();
-						this.display();
-					}));
-			setting.settingEl.addClass('local-llm-template-setting');
-		});
-
-		new Setting(containerEl)
+			.setName('Saved prompts')
+			.setDesc(`Type / in the chat box to pick one. ${summary}`)
 			.addButton(button => button
-				.setButtonText('Add template')
-				.onClick(async () => {
-					templates.push({ name: '', prompt: '' });
-					await this.plugin.saveSettings();
-					this.display();
-				}));
+				.setButtonText('Manage templates')
+				.setCta()
+				.onClick(() => this.plugin.openPromptTemplates(() => this.display())));
 	}
 
 	private parseMultilineList(value: string): string[] {

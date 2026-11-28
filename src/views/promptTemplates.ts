@@ -16,6 +16,11 @@ export function slashQuery(input: string): string | null {
 	return m ? m[1] : null;
 }
 
+/** A template name as typed after "/": no spaces, so runs of whitespace become "-". */
+export function templateName(value: string): string {
+	return value.replace(/^\s+/, '').replace(/\s+/g, '-');
+}
+
 /** Templates with a usable name and prompt, trimmed. */
 export function cleanTemplates(templates: readonly PromptTemplate[] | undefined): PromptTemplate[] {
 	return (templates ?? [])

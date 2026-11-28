@@ -19,6 +19,8 @@ export class PromptTemplatePicker {
 		private readonly input: HTMLTextAreaElement,
 		container: HTMLElement,
 		private readonly getTemplates: () => PromptTemplate[] | undefined,
+		/** Opens the templates window; shown as the menu's last line when given. */
+		private readonly onManage?: () => void,
 	) {
 		this.menuEl = container.createEl('div', {
 			cls: 'local-llm-template-menu local-llm-template-menu-hidden',
@@ -119,5 +121,14 @@ export class PromptTemplatePicker {
 				this.choose(template);
 			});
 		});
+		if (this.onManage) {
+			const manage = this.menuEl.createEl('div', { cls: 'local-llm-template-manage', text: 'Manage templates…' });
+			manage.addEventListener('mousedown', (e) => {
+				e.preventDefault();
+				this.input.value = '';
+				this.close();
+				this.onManage?.();
+			});
+		}
 	}
 }

@@ -31,12 +31,15 @@ export class Plugin {
 export class Modal {
   app: any;
   modalEl: HTMLElement;
+  titleEl: HTMLElement;
   contentEl: HTMLElement;
   isOpen = false;
 
   constructor(app: any) {
     this.app = app;
     this.modalEl = document.createElement('div');
+    this.titleEl = document.createElement('div');
+    this.modalEl.appendChild(this.titleEl);
     this.contentEl = document.createElement('div');
     this.modalEl.appendChild(this.contentEl);
   }

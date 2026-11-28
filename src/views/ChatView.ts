@@ -194,7 +194,8 @@ export class ChatView extends ItemView {
 		});
 
 		// The "/" template menu goes first so Enter picks a template instead of sending.
-		this.templatePicker = new PromptTemplatePicker(this.inputElement, this.inputContainer, () => this.plugin.settings.promptTemplates);
+		this.templatePicker = new PromptTemplatePicker(this.inputElement, this.inputContainer, () => this.plugin.settings.promptTemplates,
+			() => this.plugin.openPromptTemplates(() => this.inputElement.focus()));
 
 		// Add event listeners
 		this.inputElement.addEventListener('keydown', (e) => {

@@ -111,3 +111,71 @@ describe('PromptTemplatePicker', () => {
     expect(picker.isOpen).toBe(false);
   });
 });
+
+describe('PromptTemplatesModal', () => {
+  async function setup(templates: { name: string; prompt: string }[]) {
+    const { PromptTemplatesModal } = await import('../src/views/PromptTemplatesModal');
+    let saves = 0;
+    let closed = 0;
+    const modal = new PromptTemplatesModal({} as any, templates, async () => { saves++; }, () => { closed++; });
+    modal.open();
+    const el = modal.modalEl;
+    const names = () => [...el.querySelectorAll('.local-llm-templates-item-name')].map((e) => e.textContent);
+    const type = (sel: string, value: string) => {
+      const input = el.querySelector(sel) as HTMLInputElement | HTMLTextAreaElement;
+      input.value = value;
+      input.dispatchEvent(new Event('input'));
+    };
+    return { modal, el, names, type, saves: () => saves, closed: () => closed };
+  }
+
+  it('lists templates and edits the selected one in place', async () => {
+    const templates = [
+      { name: 'summarize', prompt: 'Summarize this.' },
+      { name: 'todo', prompt: 'List tasks.' },
+    ];
+    const { el, names, type, saves } = await setup(templates);
+    expect(names()).toEqual(['/summarize', '/todo']);
+    expect((el.querySelector('.local-llm-templates-name') as HTMLInputElement).value).toBe('summarize');
+
+    (el.querySelectorAll('.local-llm-templates-item')[1] as HTMLElement).click();
+    expect((el.querySelector('.local-llm-templates-prompt') as HTMLTextAreaElement).value).toBe('List tasks.');
+    type('.local-llm-templates-name', 'open tasks');
+    type('.local-llm-templates-prompt', 'List every open task.');
+    expect(templates[1]).toEqual({ name: 'open-tasks', prompt: 'List every open task.' });
+    expect(names()).toEqual(['/summarize', '/open-tasks']);
+    expect(saves()).toBe(2);
+  });
+
+  it('adds, warns on a duplicate name, and deletes', async () => {
+    const templates = [{ name: 'todo', prompt: 'List tasks.' }];
+    const { el, names, type } = await setup(templates);
+    (el.querySelector('.local-llm-templates-add') as HTMLButtonElement).click();
+    await Promise.resolve();
+    expect(names()).toEqual(['/todo', 'Untitled']);
+    type('.local-llm-templates-name', 'todo');
+    expect(el.querySelector('.local-llm-templates-warning')?.textContent).toContain('/todo');
+
+    (el.querySelector('.local-llm-templates-delete') as HTMLButtonElement).click();
+    await Promise.resolve();
+    expect(templates).toEqual([{ name: 'todo', prompt: 'List tasks.' }]);
+    expect(names()).toEqual(['/todo']);
+  });
+
+  it('drops a template left empty when the window closes', async () => {
+    const templates = [{ name: 'todo', prompt: 'List tasks.' }];
+    const { modal, el, closed } = await setup(templates);
+    (el.querySelector('.local-llm-templates-add') as HTMLButtonElement).click();
+    await Promise.resolve();
+    expect(templates.length).toBe(2);
+    modal.close();
+    expect(templates).toEqual([{ name: 'todo', prompt: 'List tasks.' }]);
+    expect(closed()).toBe(1);
+  });
+
+  it('shows a hint when there are no templates', async () => {
+    const { el } = await setup([]);
+    expect(el.querySelector('.local-llm-templates-empty')?.textContent).toBe('No templates yet.');
+    expect(el.querySelector('.local-llm-templates-placeholder')).not.toBeNull();
+  });
+});

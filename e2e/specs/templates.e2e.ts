@@ -73,4 +73,36 @@ describe("Private AI prompt templates", function () {
             throw new Error(`${e.message}. Last reply: "${await lastAssistantText()}"`);
         });
     });
+
+    it("adds a template in the Prompt templates window, and the / menu offers it", async function () {
+        await browser.executeObsidianCommand("private-ai:manage-prompt-templates");
+        const modal = browser.$(".local-llm-templates-modal");
+        await modal.waitForExist({ timeout: 5000 });
+        const listed = (): Promise<string[]> =>
+            browser.execute(() => [...document.querySelectorAll(".local-llm-templates-item-name")].map((e) => e.textContent ?? ""));
+        expect(await listed()).toEqual(["/greet", "/todo"]);
+
+        await browser.$(".local-llm-templates-add").click();
+        const name = browser.$(".local-llm-templates-name");
+        await name.setValue("weekly review");
+        await browser.$(".local-llm-templates-prompt").setValue("Summarize what I wrote this week.");
+        expect(await name.getValue()).toBe("weekly-review");
+        expect(await listed()).toEqual(["/greet", "/todo", "/weekly-review"]);
+        await browser.keys("Escape");
+        await modal.waitForExist({ reverse: true, timeout: 5000 });
+
+        const saved = await browser.executeObsidian(({ app }) =>
+            (app as any).plugins.plugins["private-ai"].settings.promptTemplates.map((t: { name: string }) => t.name));
+        expect(saved).toEqual(["greet", "todo", "weekly-review"]);
+
+        const input = browser.$(`${view} textarea.local-llm-input`);
+        await input.clearValue();
+        await input.click();
+        await browser.keys(["/", "w"]);
+        await browser.waitUntil(async () => (await menuNames()).length === 1, { timeout: 5000 });
+        expect(await menuNames()).toEqual(["/weekly-review"]);
+        await browser.keys("Enter");
+        expect(await input.getValue()).toBe("Summarize what I wrote this week.");
+        await input.clearValue();
+    });
 });
