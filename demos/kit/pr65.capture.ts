@@ -44,26 +44,48 @@ describe("PR 65 demo: / prompt templates", function () {
     });
 
     it("records", async function () {
-        await k.caption("PR #65: save prompts as templates and pick them by typing / in the chat box", 2600);
-        await k.caption("Settings, then Private AI: the new Prompt templates section. Click Add template");
+        await k.caption("PR #65: prompt templates now have their own window. Pick them by typing / in the chat box", 2800);
+        await k.caption("Settings, then Private AI: the Prompt templates section is now one line with a button");
         await k.openPluginSettings();
-        const add = browser.$("//button[normalize-space()='Add template']");
-        await k.click(add, 1000);
-        const names = await browser.$$(".local-llm-template-setting input[type=text]");
-        const prompts = await browser.$$(".local-llm-template-setting textarea");
-        await k.caption("Give it a name and the prompt text");
-        await k.typeInto(names[names.length - 1], "tasks");
-        await k.typeInto(prompts[prompts.length - 1], "List every open task in my notes.");
-        await browser.pause(800);
+        const manage = browser.$("//button[normalize-space()='Manage templates']");
+        await manage.scrollIntoView({ block: "center" });
+        await browser.pause(600);
+        await k.pointAt(manage);
+        await browser.pause(1200);
+        await k.caption("Click Manage templates to open the templates window");
+        await k.click(manage, 1200);
+        await browser.$(".local-llm-templates-modal").waitForExist({ timeout: 5000 });
+
+        await k.caption("Your templates are listed on the left. Click New template");
+        await k.click(browser.$(".local-llm-templates-add"), 800);
+        await k.caption("Give it a name (spaces become dashes) and the prompt text. It saves as you type");
+        await k.typeInto(browser.$(".local-llm-templates-name"), "open tasks");
+        await k.typeInto(browser.$(".local-llm-templates-prompt"), "List every open task in my notes.");
+        await browser.pause(1000);
+
+        await k.caption("Click a template in the list to edit it");
+        await k.click(browser.$("//*[contains(@class,'local-llm-templates-item-name')][normalize-space()='/summarize']"), 1500);
+
+        await k.caption("Delete removes one. Here a scratch template is added and deleted");
+        await k.click(browser.$(".local-llm-templates-add"), 400);
+        await k.typeInto(browser.$(".local-llm-templates-name"), "scratch");
+        await k.typeInto(browser.$(".local-llm-templates-prompt"), "Draft");
+        await browser.pause(600);
+        await k.click(browser.$(".local-llm-templates-delete"), 1200);
+
+        await k.caption("Close the window: settings show the saved templates");
+        await k.click(browser.$(".local-llm-templates-modal .modal-header-button, .local-llm-templates-modal .modal-close-button"), 1500);
+        await k.pointAt(browser.$("//button[normalize-space()='Manage templates']"));
+        await browser.pause(1500);
         await k.closeSettings();
 
-        await k.caption("Type / in the chat box: your templates pop up");
+        await k.caption("In the chat box, type / and your templates pop up");
         await k.click(k.chatInput(), 300);
         await keys("/");
         await browser.waitUntil(async () => (await menuNames()).length === 2, { timeout: 5000, timeoutMsg: "the / menu never opened" });
         await browser.pause(1500);
         await k.caption("Keep typing to narrow the list, then press Enter");
-        await keys("ta");
+        await keys("op");
         await browser.waitUntil(async () => (await menuNames()).length === 1, { timeout: 5000 });
         await browser.pause(1000);
         await browser.keys("Enter");
@@ -78,7 +100,17 @@ describe("PR 65 demo: / prompt templates", function () {
         await k.caption("Press Enter again (or click Send) to send it");
         await browser.keys("Enter");
         await k.turnOver();
-        await browser.pause(1500);
+        await browser.pause(1200);
+
+        await k.caption("The / menu also has a Manage templates line that opens the same window");
+        await k.click(k.chatInput(), 300);
+        await keys("/");
+        await browser.waitUntil(async () => (await menuNames()).length === 2, { timeout: 5000 });
+        await browser.pause(800);
+        await k.click(browser.$(`${k.CHAT} .local-llm-template-manage`), 1500);
+        await browser.$(".local-llm-templates-modal").waitForExist({ timeout: 5000 });
+        await browser.pause(1200);
+        await k.click(browser.$(".local-llm-templates-modal .modal-header-button, .local-llm-templates-modal .modal-close-button"), 1000);
 
         await k.caption("Templates can also be picked with the mouse");
         await k.click(k.chatInput(), 300);
@@ -93,6 +125,6 @@ describe("PR 65 demo: / prompt templates", function () {
         await k.caption("Normal questions work as before");
         await k.ask("When did I replace the water heater?");
         await browser.pause(1500);
-        await k.caption("Done: add a template in settings, pick it with / (keyboard or mouse), edit, send", 3000);
+        await k.caption("Done: manage templates in their own window, pick them with /, edit, send", 3000);
     });
 });
