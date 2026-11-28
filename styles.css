@@ -314,8 +314,10 @@
 .local-llm-input {
 	flex: 1;
 	min-height: 40px;
-	max-height: 120px;
-	resize: vertical;
+	/* The view grows the box with its text up to this height, then it scrolls (issue #80) */
+	max-height: min(40vh, 320px);
+	resize: none;
+	box-sizing: border-box;
 	padding: 8px 12px;
 	border: 1px solid var(--background-modifier-border);
 	border-radius: 6px;

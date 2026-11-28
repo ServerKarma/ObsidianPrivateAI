@@ -191,6 +191,9 @@ export class ChatView extends ItemView {
 			cls: 'local-llm-stop-button'
 		});
 
+		// Grow the box with what is typed or pasted, up to the CSS max-height (issue #80)
+		this.inputElement.addEventListener('input', () => this.resizeInput());
+
 		// Add event listeners
 		this.inputElement.addEventListener('keydown', (e) => {
 			if (e.key === 'Enter' && !e.shiftKey) {
@@ -210,6 +213,11 @@ export class ChatView extends ItemView {
 		// Obsidian waits for onOpen while it loads the workspace, so the server check must not
 		// be awaited here: a slow or hung server would hold up the whole app.
 		await this.showWelcome();
+	}
+
+	/** A wider or narrower pane rewraps the text, so refit the input. */
+	onResize(): void {
+		this.resizeInput();
 	}
 
 	async onClose() {
@@ -261,7 +269,7 @@ export class ChatView extends ItemView {
 		};
 
 		await this.addMessage(userMessage);
-		this.inputElement.value = '';
+		this.clearInput();
 
 		// Create abort controller for this request
 		this.currentAbortController = new AbortController();
@@ -384,6 +392,29 @@ export class ChatView extends ItemView {
 				return;
 			}
 		}
+	}
+
+	/**
+	 * Fit the input's height to its text, between the CSS min-height and max-height. Past the
+	 * max height the box stops growing and scrolls instead.
+	 */
+	private resizeInput(): void {
+		const el = this.inputElement;
+		if (!el) return;
+		el.style.height = 'auto';
+		const style = getComputedStyle(el);
+		const borders = (parseFloat(style.borderTopWidth) || 0) + (parseFloat(style.borderBottomWidth) || 0);
+		const maxHeight = parseFloat(style.maxHeight);
+		const wanted = el.scrollHeight + borders;
+		const capped = Number.isFinite(maxHeight) && wanted > maxHeight;
+		el.style.height = `${capped ? maxHeight : wanted}px`;
+		el.style.overflowY = capped ? 'auto' : 'hidden';
+	}
+
+	/** Empty the input and shrink it back to one line. */
+	private clearInput(): void {
+		this.inputElement.value = '';
+		this.resizeInput();
 	}
 
 	private setInputEnabled(enabled: boolean) {
@@ -1125,7 +1156,7 @@ export class ChatView extends ItemView {
 		await this.showWelcome();
 
 		// Clear input field
-		this.inputElement.value = '';
+		this.clearInput();
 		this.inputElement.focus();
 	}
 
@@ -1326,7 +1357,7 @@ export class ChatView extends ItemView {
 				...(saved.thinkingBlocks ? { thinkingBlocks: saved.thinkingBlocks } : {})
 			});
 		}
-		this.inputElement.value = '';
+		this.clearInput();
 		this.inputElement.focus();
 	}
 
