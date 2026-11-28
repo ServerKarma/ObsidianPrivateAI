@@ -127,6 +127,29 @@ describe("Private AI search over a larger vault", function () {
         });
     });
 
+    describe("tag filters find notes by tag", function () {
+        it("lists the vault's tags with counts", async function () {
+            expect(await runTool("list_tags", {})).toContain("#meeting (2 notes)");
+        });
+
+        it("lists only notes with the tag", async function () {
+            const result = await runTool("list_notes", { tags: "#meeting" });
+            const paths = [...result.matchAll(/^(.+?\.md) {2}\(modified /gm)].map((m) => m[1]).sort();
+            expect(paths).toEqual(["Work/One on One with Marcus.md", "Work/Q3 Planning Meeting.md"]);
+        });
+
+        it("limits search_notes and grep_notes to tagged notes", async function () {
+            const ranked = rankedPaths(await runTool("search_notes", { query: "planning", tags: "meeting" }));
+            expect(ranked.length).toBeGreaterThan(0);
+            expect(ranked.every((p) => p === "Work/One on One with Marcus.md" || p === "Work/Q3 Planning Meeting.md")).toBe(true);
+            expect(grepPaths(await runTool("grep_notes", { pattern: "e", tags: "meeting" }))).toEqual([
+                "Work/One on One with Marcus.md",
+                "Work/Q3 Planning Meeting.md",
+            ]);
+            expect(await runTool("list_notes", { tags: "no-such-tag" })).toBe("No notes tagged #no-such-tag.");
+        });
+    });
+
     describe("the agent answers from the larger vault", function () {
         let llm: FakeLmStudio;
 
