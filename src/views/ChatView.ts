@@ -1,4 +1,5 @@
 import { ItemView, WorkspaceLeaf, MarkdownRenderer, Notice, TFile, setIcon } from 'obsidian';
+import { PromptTemplatePicker } from './PromptTemplatePicker';
 import { LLMService, createLLMService, ServerStatus } from '../services/LLMService';
 import { setupInstructions, welcomeNoModelsMessage } from '../services/modelGuidance';
 import { PiChatAgent, ChatAgentEvent } from '../agent/pi/PiChatAgent';
@@ -70,6 +71,7 @@ export class ChatView extends ItemView {
 	private messageContainer: HTMLElement;
 	private inputContainer: HTMLElement;
 	private inputElement: HTMLTextAreaElement;
+	private templatePicker: PromptTemplatePicker;
 	private sendButton: HTMLButtonElement;
 	private stopButton: HTMLButtonElement;
 	private llmService: LLMService;
@@ -190,6 +192,10 @@ export class ChatView extends ItemView {
 			text: 'Stop',
 			cls: 'local-llm-stop-button'
 		});
+
+		// The "/" template menu goes first so Enter picks a template instead of sending.
+		this.templatePicker = new PromptTemplatePicker(this.inputElement, this.inputContainer, () => this.plugin.settings.promptTemplates,
+			() => this.plugin.openPromptTemplates(() => this.inputElement.focus()));
 
 		// Add event listeners
 		this.inputElement.addEventListener('keydown', (e) => {
