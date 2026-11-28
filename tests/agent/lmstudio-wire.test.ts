@@ -102,6 +102,36 @@ describe('Pi agent against an OpenAI-compatible local server', () => {
 		expect(assistantMsg.tool_calls[0].function).toMatchObject({ name: 'grep_notes', arguments: '{"pattern":"furnace"}' });
 	});
 
+	it('handles Ollama-style chunks: whole tool call in one chunk, thinking in `reasoning`', async () => {
+		const vault = new InMemoryVault({ 'Home/HVAC Tune-up.md': 'Furnace serviced by Acme on 2025-10-02.' });
+		client = await connectInProcess(createVaultMcpServer(createVaultTools({ vault, search: new VaultSearch(vault), confirm: async () => true }), { version: 't', allowWrites: () => true }));
+		// Ollama's /v1/chat/completions sends the complete call, arguments included, in one delta.
+		turns = [
+			() => [
+				chunk({ role: 'assistant', content: '', reasoning: 'Look it up.' }),
+				chunk({ role: 'assistant', content: '', tool_calls: [{ id: 'call_ab12', index: 0, type: 'function', function: { name: 'grep_notes', arguments: '{"pattern":"furnace"}' } }] }),
+				chunk({ role: 'assistant', content: '' }, 'tool_calls'),
+			],
+			() => [chunk({ role: 'assistant', content: 'On 2025-10-02.' }), chunk({ role: 'assistant', content: '' }, 'stop')],
+		];
+		const thinking: string[] = [];
+		const agent = new PiChatAgent({
+			settings: () => ({ apiEndpoint: endpoint, model: 'gemma4:e4b', systemPrompt: '', maxToolRounds: 5 }),
+			loadTools: () => loadMcpTools(client),
+		});
+		const answer = await agent.send('When was the furnace serviced?', (e) => {
+			if (e.type === 'thinking') thinking.push(e.delta);
+		});
+		expect(answer).toBe('On 2025-10-02.');
+		expect(thinking.join('')).toBe('Look it up.');
+		expect(requests[0].body.model).toBe('gemma4:e4b');
+		expect(requests[0].body).not.toHaveProperty('max_tokens');
+		expect(requests[0].body).not.toHaveProperty('temperature');
+		const toolMsg = requests[1].body.messages.find((m: any) => m.role === 'tool');
+		expect(toolMsg).toMatchObject({ tool_call_id: 'call_ab12' });
+		expect(JSON.stringify(toolMsg.content)).toContain('Home/HVAC Tune-up.md:1');
+	});
+
 	it('reports a server that is not running as a readable error', async () => {
 		await new Promise<void>((r) => server.close(() => r()));
 		server = http.createServer();

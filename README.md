@@ -13,19 +13,32 @@ Your most sensitive notes, your private thoughts — other AI plugins send them 
 * ✅ No data is transmitted to external services
 * ✅ No analytics or tracking
 
-Compatible With: [LM Studio](https://lmstudio.ai/)
+Compatible With: [LM Studio](https://lmstudio.ai/), [Ollama](https://ollama.com/), [llama.cpp](https://github.com/ggml-org/llama.cpp) (`llama-server`), [Jan](https://jan.ai/), and other OpenAI-compatible servers running on your computer
 
 ## Getting Started + Setup
 
 * Goto Community Plugins
 * Search `Private AI` and click Install
 * Click Enable
+* Open the Private AI settings and pick your **Local server**. The API endpoint is filled in for you.
 
 Enjoy!
 
+## Local servers
+
+| Server | Default endpoint | Notes |
+| --- | --- | --- |
+| LM Studio | `http://localhost:1234/v1/chat/completions` | Turn on the server in the Developer tab and enable CORS. Private AI loads a model for you if none is loaded. |
+| Ollama | `http://localhost:11434/v1/chat/completions` | Works out of the box. Download a model with `ollama pull gemma4:e4b`. Ollama's default context on machines with under 24 GB of VRAM is 4k tokens, which is tight for the agent: raise **Context length** in the Ollama app settings, or set `OLLAMA_CONTEXT_LENGTH`, to 32k or more. |
+| llama.cpp | `http://localhost:8080/v1/chat/completions` | Start `llama-server` with `--jinja` so the model can call tools, and `-c 32768` or more. |
+| Jan | `http://localhost:1337/v1/chat/completions` | Start the Local API Server in Jan's settings with CORS on. If you set an API key there, enter it in Private AI too. |
+| Other | your server's `/v1/chat/completions` | Any OpenAI-compatible server with tool calling. |
+
+Private AI reads which models are downloaded, which one is loaded, whether it can use tools and images, and its context length from LM Studio, Ollama and llama.cpp. For other servers it uses the model you pick and assumes an 8k context.
+
 ## Features
 
-- **Easy Setup**: Easy setup and model swapping with LM Studio
+- **Easy Setup**: Easy setup and model swapping with LM Studio, Ollama, llama.cpp or Jan
 - **Cross Platform**: Supports for most modern Mac and Windows machines
 - **Agent that works your vault**: The AI searches and reads notes itself, then cites the notes it used. When you ask, it can also create, edit, move or delete notes, but every change opens a dialog showing exactly what will change, and nothing happens unless you click Allow. It runs on the open-source [Pi](https://github.com/badlogic/pi-mono) agent harness.
 - **No embeddings, no index database**: Notes are found with BM25 ranked search plus grep over the files on disk, so there's no embedding model to load and nothing to rebuild. Text in images can be read once by a vision model and searched too.
@@ -65,7 +78,7 @@ Changes to your vault always wait for you. The dialog shows exactly what will be
 ## How it works
 
 ```
-Chat view ──► Pi agent loop (pi-agent-core + pi-ai, OpenAI-compatible) ──► LM Studio
+Chat view ──► Pi agent loop (pi-agent-core + pi-ai, OpenAI-compatible) ──► LM Studio / Ollama / llama.cpp / Jan
                   │
                   ▼  tool calls over MCP (in-process only, no network port)
           Built-in MCP server ──► vault tools ──► BM25 index + grep over your notes
@@ -76,7 +89,7 @@ Pick a model that supports tool use and, to read text in images, vision. These r
 - **Gemma 4 E4B** (recommended) for 16 GB of memory or more
 - **Gemma 4 E2B** for 8 GB of memory, such as a base MacBook Air M1
 
-If no model is loaded when you send a message, Private AI picks the smallest downloaded model that can use tools and LM Studio loads it.
+If no model is loaded when you send a message, Private AI picks the smallest downloaded model that can use tools, and LM Studio or Ollama loads it. On Ollama these are `gemma4:e4b` and `gemma4:e2b`.
 
 ## Development
 
@@ -111,6 +124,9 @@ All development dependencies are used under their respective open-source license
 ### Third-Party Services
 This plugin integrates with local LLM services but does not include any of their code:
 - **[LM Studio](https://lmstudio.ai/)** - Proprietary - Local LLM interface
+- **[Ollama](https://ollama.com/)** - MIT License - Local LLM server
+- **[llama.cpp](https://github.com/ggml-org/llama.cpp)** - MIT License - Local LLM server
+- **[Jan](https://jan.ai/)** - Open source - Local LLM interface
 
 ### License
 

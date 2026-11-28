@@ -1,6 +1,7 @@
 import { ItemView, WorkspaceLeaf, MarkdownRenderer, Notice, TFile, setIcon } from 'obsidian';
 import { LLMService, createLLMService, ServerStatus } from '../services/LLMService';
 import { setupInstructions, welcomeNoModelsMessage } from '../services/modelGuidance';
+import type { ServerType } from '../services/localServers';
 import { PiChatAgent, ChatAgentEvent } from '../agent/pi/PiChatAgent';
 import { describeToolCall, summarizeToolResult } from '../agent/pi/toolActivity';
 import { LoggingUtility } from '../utils/LoggingUtility';
@@ -47,6 +48,7 @@ interface ThinkingPanelElements {
 
 interface LLMConfig {
 	apiEndpoint: string;
+	serverType?: ServerType;
 	systemPrompt?: string;
 	model?: string;
 	apiKey?: string;
@@ -222,6 +224,7 @@ export class ChatView extends ItemView {
 		LoggingUtility.log('Updating LLM service with settings:', settings);
 		this.llmService = createLLMService({
 			apiEndpoint: settings.apiEndpoint,
+			serverType: settings.serverType,
 			systemPrompt: settings.systemPrompt,
 			model: settings.model,
 			apiKey: settings.apiKey
@@ -232,6 +235,7 @@ export class ChatView extends ItemView {
 		LoggingUtility.log('Updating LLM service with config:', config);
 		this.llmService = createLLMService({
 			apiEndpoint: config.apiEndpoint,
+			serverType: config.serverType ?? this.plugin.settings.serverType,
 			systemPrompt: config.systemPrompt,
 			model: config.model,
 			apiKey: config.apiKey
@@ -1354,17 +1358,17 @@ export class ChatView extends ItemView {
 
 	/**
 	 * Checks the server in the background. The chat starts empty; a first message appears
-	 * only when there is something the user has to do (start LM Studio, download a model).
+	 * only when there is something the user has to do (start the local server, download a model).
 	 */
 	private async showWelcome(): Promise<void> {
 		const check = ++this.welcomeCheck;
 		this.welcomeReady = (async () => {
 			let text: string | null;
 			try {
-				text = await ChatView.getWelcomeMessage(this.llmService);
+				text = await ChatView.getWelcomeMessage(this.llmService, this.plugin.settings.serverType);
 			} catch (error) {
 				LoggingUtility.warn('Could not build the welcome message:', error);
-				text = setupInstructions();
+				text = setupInstructions(this.plugin.settings.serverType);
 			}
 			// A newer chat or check has replaced this one.
 			if (check !== this.welcomeCheck) return;
@@ -1400,9 +1404,9 @@ export class ChatView extends ItemView {
 
 	/**
 	 * What to tell the user before they start: nothing (null) when the server is usable,
-	 * otherwise what to do (start LM Studio, or download a model).
+	 * otherwise what to do (start the local server, or download a model).
 	 */
-	private static async getWelcomeMessage(llmService: LLMService): Promise<string | null> {
+	private static async getWelcomeMessage(llmService: LLMService, serverType?: ServerType): Promise<string | null> {
 		let status: ServerStatus | undefined;
 		try {
 			status = await llmService.getServerStatus?.();
@@ -1410,11 +1414,11 @@ export class ChatView extends ItemView {
 			LoggingUtility.warn('Could not check the LLM server:', error);
 		}
 		if (status?.state === 'ready') return null;
-		if (status?.state === 'no-models') return welcomeNoModelsMessage();
-		if (status?.state === 'offline') return setupInstructions();
+		if (status?.state === 'no-models') return welcomeNoModelsMessage(serverType);
+		if (status?.state === 'offline') return setupInstructions(serverType);
 
 		// A server that can't list its models: find out by asking it something.
 		const testResult = await llmService.testConnection();
-		return testResult.success ? null : setupInstructions();
+		return testResult.success ? null : setupInstructions(serverType);
 	}
 }

@@ -3,7 +3,8 @@ import { ChatView } from './views/ChatView';
 import { LoggingUtility } from './utils/LoggingUtility';
 import { AgentRuntime } from './agent/obsidian/AgentRuntime';
 import { ChatAgentError, PiChatAgent } from './agent/pi/PiChatAgent';
-import { imagesUnavailableMessage, noModelsMessage, noToolSupportMessage, noVisionMessage, serverOfflineMessage } from './services/modelGuidance';
+import { imagesUnavailableMessage, noModelsMessage, noToolSupportMessage, noVisionMessage, serverOfflineMessage, smallContextMessage } from './services/modelGuidance';
+import { guessServerType, isPresetEndpoint, isServerType, SERVER_CHOICES, ServerType, serverProfile } from './services/localServers';
 import { ImageTextExtractor } from './services/ImageTextExtractor';
 import { CleanupResult, removeLegacyEmbeddingFiles } from './services/LegacyEmbeddingCleanup';
 import { CHAT_RETENTION_CHOICES, ChatHistory } from './services/ChatHistory';
@@ -15,12 +16,14 @@ import { GITHUB_REPO_URL, REVIEW_MODAL_DELAY_MS, REVIEW_PAGE_URL, shouldShowRevi
 export const CHAT_VIEW_TYPE = 'local-llm-chat-view';
 
 export interface LocalLLMSettings {
+	/** Which local server the endpoint belongs to (LM Studio, Ollama, llama.cpp, Jan or another OpenAI-compatible one). */
+	serverType: ServerType;
 	apiEndpoint: string;
 	// User preferences appended to the agent's system prompt
 	systemPrompt: string;
 	// Model setting (optional - if not set, the first loaded chat model is used)
 	model?: string;
-	// API key (optional) - if specified, used as a Bearer token (works with LM Studio)
+	// API key (optional) - if specified, sent as a Bearer token
 	apiKey?: string;
 	enableDeveloperLogging: boolean;
 	// Agent (Pi harness) settings
@@ -53,6 +56,7 @@ const LEGACY_DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant with access to
 const REMOVED_SETTINGS = ['searchMaxResults', 'searchContextPercentage', 'searchThreshold', 'enableRAG', 'ragThreshold', 'ragMaxResults', 'embeddingEndpoint', 'embeddingModel', 'contextMode', 'mcpServerEnabled', 'mcpServerPort', 'mcpServerToken', 'contextWindow', 'maxTokens', 'temperature'];
 
 export const DEFAULT_SETTINGS: LocalLLMSettings = {
+	serverType: 'lmstudio',
 	apiEndpoint: 'http://localhost:1234/v1/chat/completions',
 	systemPrompt: '',
 	enableDeveloperLogging: false,
@@ -73,6 +77,8 @@ export const DEFAULT_SETTINGS: LocalLLMSettings = {
 	successfulChatsAtLastReviewPrompt: 0
 };
 
+/** Below this many tokens of context, the agent has little room left for notes. */
+const SMALL_CONTEXT_TOKENS = 16384;
 
 export default class LocalLLMPlugin extends Plugin {
 	settings: LocalLLMSettings;
@@ -97,6 +103,7 @@ export default class LocalLLMPlugin extends Plugin {
 		const { createLLMService } = await import('./services/LLMService');
 		this.llmService = createLLMService({
 			apiEndpoint: this.settings.apiEndpoint,
+			serverType: this.settings.serverType,
 			apiKey: this.settings.apiKey,
 			systemPrompt: this.settings.systemPrompt,
 			model: this.settings.model
@@ -207,6 +214,11 @@ export default class LocalLLMPlugin extends Plugin {
 			data.systemPrompt = '';
 			changed = true;
 		}
+		if (!isServerType(data.serverType)) {
+			// Saved before the server choice existed: tell it from the endpoint's port.
+			data.serverType = guessServerType(data.apiEndpoint ?? DEFAULT_SETTINGS.apiEndpoint);
+			changed = true;
+		}
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
 		if (changed) {
 			await this.saveData(this.settings);
@@ -229,17 +241,34 @@ export default class LocalLLMPlugin extends Plugin {
 				const { createLLMService } = await import('./services/LLMService');
 				const status = await createLLMService({
 					apiEndpoint: this.settings.apiEndpoint,
+					serverType: this.settings.serverType,
 					apiKey: this.settings.apiKey,
 					model: this.settings.model
 				}).getServerStatus('tools');
-				if (status.state === 'offline') throw new ChatAgentError(serverOfflineMessage(this.settings.apiEndpoint));
-				if (status.state === 'no-models') throw new ChatAgentError(noModelsMessage());
+				if (status.state === 'offline') throw new ChatAgentError(serverOfflineMessage(this.settings.apiEndpoint, this.settings.serverType));
+				if (status.state === 'no-models') throw new ChatAgentError(noModelsMessage(this.settings.serverType));
 				if (status.state !== 'ready') return undefined;
-				if (status.model.toolUse === false) throw new ChatAgentError(noToolSupportMessage(status.model.id));
-				// The context length LM Studio loaded the model with; unknown until it is loaded.
+				if (status.model.toolUse === false) throw new ChatAgentError(noToolSupportMessage(status.model.id, this.settings.serverType));
+				// The context length the server loaded the model with, when it reports one.
+				this.warnIfSmallContext(status.model);
 				return { id: status.model.id, contextWindow: status.model.contextLength };
 			}
 		});
+	}
+
+	private smallContextWarned = new Set<string>();
+
+	/**
+	 * Says once per model and size when the server runs the model with too little context
+	 * for the agent (Ollama's default on smaller machines is 4k). Only for a loaded model,
+	 * whose context is known rather than assumed.
+	 */
+	private warnIfSmallContext(model: { id: string; loaded: boolean; contextLength?: number }): void {
+		if (!model.loaded || !model.contextLength || model.contextLength >= SMALL_CONTEXT_TOKENS) return;
+		const key = `${model.id}|${model.contextLength}`;
+		if (this.smallContextWarned.has(key)) return;
+		this.smallContextWarned.add(key);
+		new Notice(smallContextMessage(model.id, model.contextLength, this.settings.serverType), 15000);
 	}
 
 	/** Reads text out of images with the vision model so search can find it. */
@@ -252,16 +281,16 @@ export default class LocalLLMPlugin extends Plugin {
 		this.imageProcessing = controller;
 		try {
 			const { createLLMService } = await import('./services/LLMService');
-			const connection = { apiEndpoint: this.settings.apiEndpoint, apiKey: this.settings.apiKey, model: this.settings.model };
+			const connection = { apiEndpoint: this.settings.apiEndpoint, serverType: this.settings.serverType, apiKey: this.settings.apiKey, model: this.settings.model };
 			const status = await createLLMService(connection).getServerStatus('vision');
 			if (status.state === 'offline' || status.state === 'no-models') {
-				if (!background) new Notice(imagesUnavailableMessage(status.state), 8000);
+				if (!background) new Notice(imagesUnavailableMessage(status.state, this.settings.serverType), 8000);
 				return;
 			}
 			let visionKnown = false;
 			if (status.state === 'ready') {
 				if (status.model.vision === false) {
-					if (!background) new Notice(noVisionMessage(status.model.id), 10000);
+					if (!background) new Notice(noVisionMessage(status.model.id, this.settings.serverType), 10000);
 					return;
 				}
 				// On startup, don't make the server load a model just to read images.
@@ -276,7 +305,7 @@ export default class LocalLLMPlugin extends Plugin {
 			// Servers that don't report capabilities are asked to describe a test image instead.
 			if (!visionKnown && !(await extractor.checkVisionCapabilities())?.supportsVision) {
 				if (!background) {
-					new Notice('Vision model required: load a vision model (like Gemma 4) in LM Studio to read text from images.', 8000);
+					new Notice(`Vision model required: load a vision model (like Gemma 4) in ${serverProfile(this.settings.serverType).name} to read text from images.`, 8000);
 				}
 				return;
 			}
@@ -332,6 +361,7 @@ export default class LocalLLMPlugin extends Plugin {
 			const { createLLMService } = await import('./services/LLMService');
 			this.llmService = createLLMService({
 				apiEndpoint: this.settings.apiEndpoint,
+				serverType: this.settings.serverType,
 				apiKey: this.settings.apiKey,
 				systemPrompt: this.settings.systemPrompt,
 				model: this.settings.model
@@ -481,11 +511,33 @@ class LocalLLMSettingTab extends PluginSettingTab {
 			});
 		};
 
+		const server = serverProfile(this.plugin.settings.serverType);
+
+		new Setting(containerEl)
+			.setName('Local server')
+			.setDesc('The app that runs the AI model on this computer. Private AI only talks to the server at the endpoint below.')
+			.addDropdown(dropdown => {
+				for (const choice of SERVER_CHOICES) dropdown.addOption(choice.type, choice.label);
+				dropdown.setValue(this.plugin.settings.serverType);
+				dropdown.onChange(async (value) => {
+					if (!isServerType(value)) return;
+					this.plugin.settings.serverType = value;
+					// Move to the new server's usual address, unless the user typed their own.
+					if (isPresetEndpoint(this.plugin.settings.apiEndpoint)) {
+						this.plugin.settings.apiEndpoint = serverProfile(value).defaultEndpoint;
+					}
+					// A model name from one server means nothing to another.
+					this.plugin.settings.model = undefined;
+					await this.plugin.saveSettings();
+					this.display();
+				});
+			});
+
 		new Setting(containerEl)
 			.setName('API endpoint')
-			.setDesc('The endpoint URL for your local LLM API')
+			.setDesc(`The OpenAI-compatible chat completions URL of ${server.name}.`)
 			.addText(text => text
-				.setPlaceholder('http://localhost:1234/v1/chat/completions')
+				.setPlaceholder(server.defaultEndpoint)
 				.setValue(this.plugin.settings.apiEndpoint)
 				.onChange(async (value) => {
 					this.plugin.settings.apiEndpoint = value;
@@ -494,7 +546,7 @@ class LocalLLMSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('API key')
-			.setDesc('Optional API key sent as a Bearer token for API authentication.  To generate, goto LM Studio, click Developer tab, Server Settings, and click Manage Tokens')
+			.setDesc(server.apiKeyHelp)
 			.addText(text => text
 				.setPlaceholder('Enter API key')
 				.setValue(this.plugin.settings.apiKey ?? '')
@@ -507,7 +559,7 @@ class LocalLLMSettingTab extends PluginSettingTab {
 		// Model dropdown setting
 		const modelSetting = new Setting(containerEl)
 			.setName('Model')
-			.setDesc('Select a specific model to use. (Loaded from LM Studio downloaded models.)')
+			.setDesc(`Select a specific model to use. (Loaded from the models downloaded in ${server.name}.)`)
 			.addDropdown(dropdown => {
 				// Add empty option for no model selection
 				dropdown.addOption('', 'Auto (server chooses)');
@@ -528,7 +580,7 @@ class LocalLLMSettingTab extends PluginSettingTab {
 		// Add refresh models button
 		modelSetting.addButton(button => button
 			.setButtonText('Refresh Models')
-			.setTooltip('Load available models from LM Studio')
+			.setTooltip(`Load available models from ${server.name}`)
 			.onClick(async () => {
 				await this.loadAvailableModels();
 			}));
@@ -710,6 +762,7 @@ class LocalLLMSettingTab extends PluginSettingTab {
 				const { createLLMService } = await import('./services/LLMService');
 				const llmService = createLLMService({
 					apiEndpoint: this.plugin.settings.apiEndpoint,
+					serverType: this.plugin.settings.serverType,
 					apiKey: this.plugin.settings.apiKey,
 					systemPrompt: this.plugin.settings.systemPrompt,
 					model: this.plugin.settings.model
@@ -758,7 +811,7 @@ class LocalLLMSettingTab extends PluginSettingTab {
 	}
 
 	/**
-	 * Load available models from the LM Studio /v1/models endpoint
+	 * Load the models the configured server has downloaded
 	 */
 	private async loadAvailableModels(): Promise<void> {
 		const dropdown = (this as any).modelDropdown;
@@ -775,6 +828,7 @@ class LocalLLMSettingTab extends PluginSettingTab {
 			const { createLLMService } = await import('./services/LLMService');
 			const llmService = createLLMService({
 				apiEndpoint: this.plugin.settings.apiEndpoint,
+				serverType: this.plugin.settings.serverType,
 				apiKey: this.plugin.settings.apiKey
 			});
 
@@ -820,7 +874,8 @@ class LocalLLMSettingTab extends PluginSettingTab {
 			dropdown.selectEl.disabled = false;
 
 			// Show notice to user
-			new Notice('Failed to load models from LM Studio. Please check your API endpoint and ensure LM Studio is running.');
+			const name = serverProfile(this.plugin.settings.serverType).name;
+			new Notice(`Failed to load models from ${name}. Please check your API endpoint and ensure ${name} is running.`);
 		}
 	}
 

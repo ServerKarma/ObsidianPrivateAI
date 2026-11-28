@@ -20,8 +20,8 @@ export interface ResolvedModel {
 }
 
 /**
- * Context length assumed when the server doesn't report one (not LM Studio, or the model
- * isn't loaded yet). LM Studio reports the real value once the model is loaded.
+ * Context length assumed when the server doesn't report one (Jan or another OpenAI-compatible
+ * server, or the model isn't loaded yet). LM Studio, Ollama and llama.cpp report the real value.
  */
 export const FALLBACK_CONTEXT_WINDOW = 8192;
 
@@ -40,7 +40,7 @@ export interface PiChatAgentDeps {
 	loadTools: () => Promise<AgentTool[]>;
 	/**
 	 * Checks the server before each turn and names the model to use (e.g. the one loaded in
-	 * LM Studio) and its loaded context length. Throws a ChatAgentError with instructions when
+	 * the server) and its loaded context length. Throws a ChatAgentError with instructions when
 	 * the server can't be used; returns undefined to fall back to the configured model.
 	 */
 	resolveModel?: () => Promise<ResolvedModel | undefined>;
@@ -76,7 +76,7 @@ export function buildLocalModel(settings: PiChatSettings, modelId: string, conte
 		input: ['text'],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow,
-		// 0 = no max_tokens in the request: the model's own settings in LM Studio decide.
+		// 0 = no max_tokens in the request: the model's own settings on the server decide.
 		maxTokens: 0,
 		compat: {
 			supportsStore: false,
@@ -154,7 +154,7 @@ export class PiChatAgent {
 		const resolved = await this.deps.resolveModel?.();
 		const modelId = resolved?.id || settings.model?.trim() || '';
 		if (!modelId) {
-			throw new ChatAgentError('No model is loaded. Load a chat model in LM Studio, or pick one in the Private AI settings.');
+			throw new ChatAgentError('No model is loaded. Load a chat model in your local AI server, or pick one in the Private AI settings.');
 		}
 		const useTools = options.useTools !== false;
 		const tools = useTools ? await this.deps.loadTools() : [];
