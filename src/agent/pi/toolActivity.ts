@@ -13,7 +13,10 @@ export function describeToolCall(name: string, args: unknown): string {
 		case 'grep_notes':
 			return `Looking for "${arg(args, 'pattern')}" in notes`;
 		case 'list_notes':
+			if (arg(args, 'tags')) return `Listing notes tagged ${arg(args, 'tags')}`;
 			return arg(args, 'folder') ? `Listing notes in ${arg(args, 'folder')}` : 'Listing notes';
+		case 'list_tags':
+			return 'Listing tags';
 		case 'get_open_notes':
 			return 'Checking which notes are open';
 		case 'read_note':
@@ -41,6 +44,11 @@ export function summarizeToolResult(name: string, text: string, isError: boolean
 		if (/^No (matching|matches|notes)/.test(firstLine) || /has no notes/.test(firstLine)) return clip(firstLine);
 		const count = text.split('\n').filter((l) => /^\d+\. |^[^\s].*:\d+: |^[^\s].*\(modified /.test(l)).length;
 		return `${count} result${count === 1 ? '' : 's'}`;
+	}
+	if (name === 'list_tags') {
+		if (/^No notes/.test(firstLine)) return clip(firstLine);
+		const count = text.split('\n').filter((l) => /^#\S+ \(\d+ note/.test(l)).length;
+		return `${count} tag${count === 1 ? '' : 's'}`;
 	}
 	if (name === 'read_note') return clip(firstLine.replace(/^# /, ''));
 	return clip(firstLine);

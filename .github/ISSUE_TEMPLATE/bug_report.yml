@@ -1,0 +1,97 @@
+name: Bug report
+description: Something in Private AI is broken or behaves unexpectedly.
+title: "[Bug] "
+labels: ["bug"]
+assignees: ["ServerKarma"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. The details below let us reproduce the problem quickly.
+        Please don't paste private note contents. A short made-up example is enough.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, including any error message or notice you saw.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The exact steps that trigger the bug.
+      placeholder: |
+        1. Open the Private AI chat
+        2. Ask "..."
+        3. See error
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Private AI version
+      description: Settings → Community plugins → Private AI.
+      placeholder: "1.0.71"
+    validations:
+      required: true
+  - type: input
+    id: obsidian-version
+    attributes:
+      label: Obsidian version
+      description: Settings → General → Current version.
+      placeholder: "1.9.12"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: server
+    attributes:
+      label: Local AI server
+      description: Which app is serving the model?
+      options:
+        - LM Studio
+        - Ollama
+        - Other OpenAI-compatible server
+    validations:
+      required: true
+  - type: input
+    id: server-version
+    attributes:
+      label: Server version
+      placeholder: "LM Studio 0.3.30 / Ollama 0.12.0"
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      description: The model name as shown in the plugin settings, and its context length if you changed it.
+      placeholder: "qwen3-8b, 32k context"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Console output
+      description: Optional. Open the developer console (Ctrl+Shift+I or Cmd+Option+I), reproduce the bug, and paste any red errors.
+      render: text
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Screenshots, vault size, other plugins that might interfere, etc.

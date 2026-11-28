@@ -27,6 +27,11 @@ export interface FakeLmStudioOptions {
      * reports one model called "mock-model" with no capability information.
      */
     restModels?: object[];
+    /**
+     * Milliseconds to wait before replying and between streamed chunks, so a
+     * recording shows the reply arriving the way a real model's does. Default 0.
+     */
+    delayMs?: number;
 }
 
 export async function startFakeLmStudio(respond: (body: any) => FakeReply, options: FakeLmStudioOptions = {}): Promise<FakeLmStudio> {
@@ -51,7 +56,7 @@ export async function startFakeLmStudio(respond: (body: any) => FakeReply, optio
         }
         let raw = "";
         req.on("data", (c) => (raw += c));
-        req.on("end", () => {
+        req.on("end", async () => {
             const body = raw ? JSON.parse(raw) : {};
             requests.push(body);
             const reply = respond(body);
@@ -62,16 +67,21 @@ export async function startFakeLmStudio(respond: (body: any) => FakeReply, optio
                 res.end(JSON.stringify({ ...base, object: "chat.completion", choices: [{ index: 0, message: { role: "assistant", content: text }, finish_reason: "stop" }] }));
                 return;
             }
+            const pause = () => (options.delayMs ? new Promise((r) => setTimeout(r, options.delayMs)) : Promise.resolve());
             res.writeHead(200, { ...cors, "Content-Type": "text/event-stream" });
             const send = (delta: object, finish: string | null = null) =>
                 res.write(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`);
+            await pause();
             if ("toolCalls" in reply) {
                 reply.toolCalls.forEach((call, index) => {
                     send({ tool_calls: [{ index, id: `call_${++callCounter}`, type: "function", function: { name: call.name, arguments: JSON.stringify(call.args) } }] });
                 });
                 send({}, "tool_calls");
             } else {
-                for (const word of reply.text.split(/(?<= )/)) send({ content: word });
+                for (const word of reply.text.split(/(?<= )/)) {
+                    send({ content: word });
+                    await pause();
+                }
                 send({}, "stop");
             }
             res.end("data: [DONE]\n\n");

@@ -1,6 +1,7 @@
 import { Type } from 'typebox';
 import { VaultPort, VaultFileInfo, isMarkdown, normalizeVaultPath, withMarkdownExtension } from '../vault/VaultPort';
 import { VaultSearch } from '../search/VaultSearch';
+import { parseTagFilter } from '../search/tags';
 
 /**
  * One vault tool, described once. The built-in MCP server publishes these
@@ -143,12 +144,18 @@ export function createVaultTools(ctx: VaultToolContext): VaultToolDefinition[] {
 					query: Type.String({ description: 'Keywords to look for' }),
 					limit: Type.Optional(Type.Integer({ description: 'Max results (default 8, max 25)' })),
 					folder: Type.Optional(Type.String({ description: 'Only search inside this folder' })),
+					tags: Type.Optional(Type.String({ description: 'Only notes with all of these tags, comma separated, e.g. "personal" or "#work, #project/garden". Nested tags count.' })),
 				},
 			),
 			readOnly: true,
 			async run(args) {
-				const hits = await search.search(str(args, 'query'), num(args, 'limit', 8, 1, 25), str(args, 'folder', false) || undefined);
-				if (hits.length === 0) return 'No matching notes. Try different or fewer keywords, or grep_notes for an exact phrase.';
+				const tags = parseTagFilter(args.tags);
+				const hits = await search.search(str(args, 'query'), num(args, 'limit', 8, 1, 25), str(args, 'folder', false) || undefined, tags);
+				if (hits.length === 0) {
+					return tags.length > 0
+						? `No matching notes tagged ${tags.map((t) => '#' + t).join(', ')}. Try different keywords, or list_tags to check the tag name.`
+						: 'No matching notes. Try different or fewer keywords, or grep_notes for an exact phrase.';
+				}
 				return hits
 					.map((h, i) => `${i + 1}. ${h.path}${h.kind === 'image' ? ' [image text]' : ''} (score ${h.score})\n   ${h.snippet}`)
 					.join('\n');
@@ -159,13 +166,14 @@ export function createVaultTools(ctx: VaultToolContext): VaultToolDefinition[] {
 			title: 'Grep notes',
 			description:
 				'Find exact text (or a regular expression) in notes, newest notes first. Returns path:line: text. ' +
-				'Best for names, dates, numbers, tags and exact phrases.',
+				'Best for names, dates, numbers and exact phrases.',
 			inputSchema: schema(
 				{
 					pattern: Type.String({ description: 'Text or regular expression to find' }),
 					regex: Type.Optional(Type.Boolean({ description: 'Treat pattern as a regular expression (default false)' })),
 					case_sensitive: Type.Optional(Type.Boolean({ description: 'Default false' })),
 					folder: Type.Optional(Type.String({ description: 'Only search inside this folder' })),
+					tags: Type.Optional(Type.String({ description: 'Only notes with all of these tags, comma separated, e.g. "personal" or "#work, #project/garden". Nested tags count.' })),
 					limit: Type.Optional(Type.Integer({ description: 'Max matching lines (default 50)' })),
 				},
 			),
@@ -175,6 +183,7 @@ export function createVaultTools(ctx: VaultToolContext): VaultToolDefinition[] {
 					regex: bool(args, 'regex'),
 					caseSensitive: bool(args, 'case_sensitive'),
 					pathPrefix: str(args, 'folder', false) || undefined,
+					tags: parseTagFilter(args.tags),
 					limit: num(args, 'limit', 50, 1, 200),
 				});
 				if (matches.length === 0) return 'No matches.';
@@ -184,9 +193,10 @@ export function createVaultTools(ctx: VaultToolContext): VaultToolDefinition[] {
 		{
 			name: 'list_notes',
 			title: 'List notes',
-			description: 'List notes, most recently modified first, optionally inside one folder.',
+			description: 'List notes, most recently modified first, optionally inside one folder or only notes with given tags.',
 			inputSchema: schema({
 				folder: Type.Optional(Type.String({ description: 'Folder to list (default: whole vault)' })),
+				tags: Type.Optional(Type.String({ description: 'Only notes with all of these tags, comma separated, e.g. "personal" or "#work, #project/garden". Nested tags count.' })),
 				limit: Type.Optional(Type.Integer({ description: 'Max notes (default 50, max 500)' })),
 			}),
 			readOnly: true,
@@ -194,13 +204,32 @@ export function createVaultTools(ctx: VaultToolContext): VaultToolDefinition[] {
 				const folder = str(args, 'folder', false).replace(/^\/+|\/+$/g, '');
 				const prefix = folder ? folder + '/' : '';
 				const limit = num(args, 'limit', 50, 1, 500);
-				const notes = search
-					.notes()
+				const tags = parseTagFilter(args.tags);
+				const notes = (tags.length > 0 ? await search.notesWithTags(tags) : search.notes())
 					.filter((f) => !prefix || f.path.startsWith(prefix))
 					.sort((a, b) => b.mtime - a.mtime);
-				if (notes.length === 0) return folder ? `No notes in ${folder}.` : 'The vault has no notes.';
+				if (notes.length === 0) {
+					if (tags.length > 0) return `No notes tagged ${tags.map((t) => '#' + t).join(', ')}${folder ? ` in ${folder}` : ''}.`;
+					return folder ? `No notes in ${folder}.` : 'The vault has no notes.';
+				}
 				const shown = notes.slice(0, limit).map(describeFile).join('\n');
 				return notes.length > limit ? `${shown}\n… ${notes.length - limit} more` : shown;
+			},
+		},
+		{
+			name: 'list_tags',
+			title: 'List tags',
+			description: 'Every tag used in the vault (frontmatter tags and inline #tags) with how many notes use it, most used first.',
+			inputSchema: schema({
+				limit: Type.Optional(Type.Integer({ description: 'Max tags (default 100, max 1000)' })),
+			}),
+			readOnly: true,
+			async run(args) {
+				const limit = num(args, 'limit', 100, 1, 1000);
+				const counts = await search.tagCounts();
+				if (counts.length === 0) return 'No notes have tags.';
+				const shown = counts.slice(0, limit).map((c) => `#${c.tag} (${c.count} note${c.count === 1 ? '' : 's'})`).join('\n');
+				return counts.length > limit ? `${shown}\n… ${counts.length - limit} more` : shown;
 			},
 		},
 		{

@@ -1,0 +1,104 @@
+name: Auto release
+
+# Every push to main becomes a published release marked as latest, so Obsidian
+# and BRAT users get it without a manual step. If the manifest version is already
+# released, the patch number is bumped and committed back to main first.
+# A commit that `npm run release` already tagged is released under that tag.
+# A version that already has a release is never published twice.
+
+on:
+  push:
+    branches: [main]
+
+# One release at a time, in push order; never cancel a release half way.
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # The bump commit is pushed with GITHUB_TOKEN, which does not start new workflow
+    # runs, but skip it explicitly too in case the token is ever swapped.
+    if: github.actor != 'github-actions[bot]'
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Pick the release version
+        id: version
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node .github/scripts/release-version.mjs
+          version=$(grep '^version=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2)
+          if gh release view "$version" >/dev/null 2>&1; then
+            echo "Release $version already exists; nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Node.js
+        if: steps.version.outputs.skip != 'true'
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        if: steps.version.outputs.skip != 'true'
+        run: npm ci
+
+      - name: Build plugin
+        if: steps.version.outputs.skip != 'true'
+        run: npm run build
+
+      - name: Run tests
+        if: steps.version.outputs.skip != 'true'
+        run: npm test
+
+      - name: Commit the version bump
+        if: steps.version.outputs.skip != 'true' && steps.version.outputs.bumped == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add manifest.json package.json
+          git commit -m "Bump version to ${VERSION}"
+          git push origin HEAD:main
+
+      - name: Tag and publish the release
+        if: steps.version.outputs.skip != 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAGGED: ${{ steps.version.outputs.tagged }}
+        run: |
+          if [ "${TAGGED}" != "true" ]; then
+            git tag "${VERSION}"
+            git push origin "refs/tags/${VERSION}"
+          fi
+          # GitHub's --generate-notes only lists pull requests, so direct pushes came out
+          # empty. List the commits since the previous release instead, minus bump commits.
+          previous=$(git describe --tags --match '[0-9]*.[0-9]*.[0-9]*' --abbrev=0 "${VERSION}^" 2>/dev/null || true)
+          if [ -n "${previous}" ]; then range="${previous}..${VERSION}"; else range="${VERSION}"; fi
+          {
+            echo "## What's changed"
+            git log --no-merges --pretty='- %s (%h)' "${range}" | grep -v '^- Bump version to ' \
+              || echo '- Maintenance release.'
+            if [ -n "${previous}" ]; then
+              echo ""
+              echo "**Full changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${previous}...${VERSION}"
+            fi
+          } > release-notes.md
+          gh release create "${VERSION}" \
+            --title="${VERSION}" \
+            --notes-file release-notes.md \
+            --latest \
+            main.js manifest.json styles.css

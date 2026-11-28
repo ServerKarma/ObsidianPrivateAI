@@ -27,8 +27,6 @@ function createPluginStub() {
     settings: {
       apiEndpoint: 'http://localhost:1234/v1/chat/completions',
       apiKey: '',
-      maxTokens: 2048,
-      temperature: 0.7,
       systemPrompt: 'Be concise',
       model: undefined,
       contextNotesVisible: false
@@ -104,9 +102,9 @@ describe('Obsidian chat smoke test', () => {
     expect(content).not.toContain('Private AI chat');
     expect(view.containerEl.querySelector('.local-llm-chat-header h4')).toBeNull();
     expect(view.containerEl.querySelector('.local-llm-new-chat-button')).not.toBeNull();
-    // Settings on the left, New chat on the right.
+    // Settings on the left, History and New chat on the right.
     const buttons = [...view.containerEl.querySelectorAll('.local-llm-header-buttons > button')].map((b) => b.className);
-    expect(buttons).toEqual(['local-llm-settings-button', 'local-llm-new-chat-button']);
+    expect(buttons).toEqual(['local-llm-settings-button', 'local-llm-history-button', 'local-llm-new-chat-button']);
     // A working server gets no greeting bubble; the hint lives in the message box.
     expect(content).not.toContain("What's on your mind?");
     expect(view.containerEl.querySelectorAll('.local-llm-message').length).toBe(0);
@@ -141,6 +139,16 @@ describe('Obsidian chat smoke test', () => {
     expect(rendered).toContain('ping');
     expect(rendered).toContain('Hello from test');
     expect(agentMock.send).toHaveBeenCalledTimes(1);
+
+    // Only the user's message sits in a bubble; the reply is inline. Both get one copy button.
+    const user = view.containerEl.querySelector('.local-llm-message-user') as HTMLElement;
+    const assistant = view.containerEl.querySelector('.local-llm-message-assistant') as HTMLElement;
+    expect(user.querySelector('.local-llm-message-bubble .local-llm-message-content')?.textContent).toBe('ping');
+    expect(assistant.querySelector('.local-llm-message-bubble')).toBeNull();
+    for (const message of [user, assistant]) {
+      expect(message.querySelectorAll('.local-llm-message-actions .local-llm-copy-button').length).toBe(1);
+      expect(message.querySelectorAll('button').length).toBe(1);
+    }
   });
 
   it('streams think tags into collapsible thinking blocks without exposing raw tags', async () => {

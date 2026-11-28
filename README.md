@@ -1,5 +1,11 @@
 # Private AI Chat for Obsidian
 
+[![Latest release](https://img.shields.io/github/v/release/ServerKarma/ObsidianPrivateAI?label=release)](https://github.com/ServerKarma/ObsidianPrivateAI/releases/latest)
+[![Build](https://github.com/ServerKarma/ObsidianPrivateAI/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/ServerKarma/ObsidianPrivateAI/actions/workflows/build.yml)
+[![Tests](https://github.com/ServerKarma/ObsidianPrivateAI/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/ServerKarma/ObsidianPrivateAI/actions/workflows/test.yml)
+
+![Private AI answering a question from the notes, then asking before it creates a new note](img/readme/demo.gif)
+
 Your most sensitive notes, your private thoughts — other AI plugins send them to someone's servers. Private AI doesn't.
 
 * ✅ Your notes stay on your device
@@ -25,10 +31,25 @@ Enjoy!
 - **No embeddings, no index database**: Notes are found with BM25 ranked search plus grep over the files on disk, so there's no embedding model to load and nothing to rebuild. Text in images can be read once by a vision model and searched too.
 - **Built-in MCP server**: The vault tools live in an MCP server inside the plugin, used only by the chat. It runs in-process with no network port, so no other app can reach your vault through it.
 - **Prompt templates**: Save prompts you use often in settings, then type `/` in the chat box to pick one
+- **Chat history**: Chats are saved in the plugin's folder (not in your notes) and can be reopened from the History button to pick up where you left off. Turn it off in settings
 - **Open Tab Context**: Focus your conversation on specific notes for focused insights
 - **Performance Tuning**: Customize models, search parameters, token limits, and more to tune performance for your hardware
 
+**Review request:** after you've had a few answers from the chat (five answered questions and at least an hour with the plugin), Private AI shows a pop-up asking you to leave a review. Choosing "Maybe later" or closing it brings it back after at least three days and three more answers. Leaving a review, starring the repository, or choosing "I already left a review" stops it for good. The pop-up is built into the plugin, loads nothing over the network, and only opens the review page or GitHub in your browser if you click those buttons.
+
 ![Easy and powerful configuration](img/config.png)
+
+## Screenshots
+
+Ask a question and the AI searches and reads your notes, then answers and lists the notes it read.
+
+![The chat answering "When did I replace the water heater?" from a note in the vault](img/readme/chat.png)
+
+Changes to your vault always wait for you. The dialog shows exactly what will be written, and nothing happens until you click Allow.
+
+![The confirmation dialog showing a new note's content with Deny and Allow buttons](img/readme/confirm.png)
+
+![The new Spring Garden note open in Obsidian after clicking Allow](img/readme/created.png)
 
 ## Example Queries
 
@@ -65,6 +86,7 @@ If no model is loaded when you send a message, Private AI picks the smallest dow
 - `npm test` runs the unit and integration tests (Vitest). The agent stack under `src/agent/` has no Obsidian dependency, so the agent loop, MCP server, tools and search are tested in plain Node against an in-memory vault and a scripted model, plus a fake OpenAI-compatible server.
 - `npm run eval` boots real Obsidian with the test vault via wdio-obsidian-service (see `AGENTIC_HARNESS_PLAN.md`). The model is scripted, so it needs no LM Studio.
 - `npm run eval:live` is a manual suite against a real LM Studio (`e2e/live/`). Start LM Studio and its local server first. It checks that a model is loaded when none is, that the loaded model is reused, and that models without tool support or vision produce a clear message. It loads and unloads models and puts back what was loaded afterwards. The no-tools and no-vision cases are skipped unless such a model is downloaded (or named in `LIVE_NO_TOOLS_MODEL` / `LIVE_NO_VISION_MODEL`). Set `LMSTUDIO_URL` if the server is not at `http://localhost:1234`.
+- `npm run screenshots` recaptures the README screenshots and GIF in `img/readme/` from real Obsidian, using the demo notes in `e2e/vault` and a scripted model. On Linux run it as `xvfb-run -a -s "-screen 0 1280x800x24" npm run screenshots` (the GIF needs ffmpeg).
 
 ### Contributing
 

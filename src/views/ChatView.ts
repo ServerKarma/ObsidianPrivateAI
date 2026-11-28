@@ -6,6 +6,8 @@ import { PiChatAgent, ChatAgentEvent } from '../agent/pi/PiChatAgent';
 import { describeToolCall, summarizeToolResult } from '../agent/pi/toolActivity';
 import { LoggingUtility } from '../utils/LoggingUtility';
 import LocalLLMPlugin from '../main';
+import { CHAT_RETENTION_CHOICES, ChatSummary, SavedChat, SavedChatMessage, chatTitle, newChatId } from '../services/ChatHistory';
+import type { AgentMessage } from '@mariozechner/pi-agent-core';
 
 export const CHAT_VIEW_TYPE = 'local-llm-chat-view';
 
@@ -46,8 +48,6 @@ interface ThinkingPanelElements {
 
 interface LLMConfig {
 	apiEndpoint: string;
-	maxTokens: number;
-	temperature: number;
 	systemPrompt?: string;
 	model?: string;
 	apiKey?: string;
@@ -60,13 +60,15 @@ interface ObsidianApp {
 	};
 }
 
+/** How many saved chats are kept; older ones are deleted. */
+const MAX_SAVED_CHATS = 100;
+
 /** The hint in the empty message box. A working server gets no greeting message in the chat itself. */
 const INPUT_PLACEHOLDER = `What's on your mind?`;
 
 export class ChatView extends ItemView {
 	private messages: ChatMessage[] = [];
 	private messageContainer: HTMLElement;
-	private reviewPromptBanner: HTMLElement;
 	private inputContainer: HTMLElement;
 	private inputElement: HTMLTextAreaElement;
 	private templatePicker: PromptTemplatePicker;
@@ -81,6 +83,12 @@ export class ChatView extends ItemView {
 	private thinkingViewState = new Map<string, ThinkingViewState>();
 	private streamingRenderInFlight = new Set<string>();
 	private pendingStreamingRender = new Map<string, ChatMessage>();
+	/** The saved chat this conversation is written to; null until the first answer. */
+	private chatId: string | null = null;
+	private chatCreatedAt: string | null = null;
+	private historyPanel: HTMLElement;
+	/** Resolves when the last save finished. For tests. */
+	historySaved: Promise<void> = Promise.resolve();
 
 	constructor(leaf: WorkspaceLeaf, plugin: LocalLLMPlugin) {
 		super(leaf);
@@ -130,10 +138,19 @@ export class ChatView extends ItemView {
 			}
 		});
 
+		const historyButton = headerButtons.createEl('button', {
+			cls: 'local-llm-history-button',
+			text: 'History',
+			attr: { 'aria-label': 'Show saved chats', 'type': 'button' }
+		});
+		historyButton.addEventListener('click', async () => {
+			await this.toggleHistory();
+		});
+
 		// New chat sits on the right
 		const newChatButton = headerButtons.createEl('button', {
 			cls: 'local-llm-new-chat-button',
-			text: 'New chat',
+			text: 'New Chat',
 			attr: { 'aria-label': 'Start new chat', 'type': 'button' }
 		});
 		newChatButton.addEventListener('click', async () => {
@@ -148,9 +165,9 @@ export class ChatView extends ItemView {
 			cls: 'local-llm-messages'
 		});
 
-		// Create inline review prompt area (hidden by default).
-		this.reviewPromptBanner = chatContainer.createEl('div', {
-			cls: 'local-llm-review-prompt local-llm-review-prompt-hidden'
+		// Saved chats, shown in place of the messages when History is open
+		this.historyPanel = chatContainer.createEl('div', {
+			cls: 'local-llm-history local-llm-history-hidden'
 		});
 
 		// Create input container (fixed at bottom)
@@ -198,10 +215,6 @@ export class ChatView extends ItemView {
 		// Obsidian waits for onOpen while it loads the workspace, so the server check must not
 		// be awaited here: a slow or hung server would hold up the whole app.
 		await this.showWelcome();
-
-		if (typeof this.plugin.consumePendingReviewPrompt === 'function') {
-			this.plugin.consumePendingReviewPrompt(this);
-		}
 	}
 
 	async onClose() {
@@ -214,8 +227,6 @@ export class ChatView extends ItemView {
 		LoggingUtility.log('Updating LLM service with settings:', settings);
 		this.llmService = createLLMService({
 			apiEndpoint: settings.apiEndpoint,
-			maxTokens: settings.maxTokens,
-			temperature: settings.temperature,
 			systemPrompt: settings.systemPrompt,
 			model: settings.model,
 			apiKey: settings.apiKey
@@ -226,58 +237,16 @@ export class ChatView extends ItemView {
 		LoggingUtility.log('Updating LLM service with config:', config);
 		this.llmService = createLLMService({
 			apiEndpoint: config.apiEndpoint,
-			maxTokens: config.maxTokens,
-			temperature: config.temperature,
 			systemPrompt: config.systemPrompt,
 			model: config.model,
 			apiKey: config.apiKey
 		});
 	}
 
-	showReviewPromptBanner(message: string, reviewUrl: string): void {
-		this.reviewPromptBanner.empty();
-		this.reviewPromptBanner.removeClass('local-llm-review-prompt-hidden');
-		this.reviewPromptBanner.addClass('local-llm-review-prompt-visible');
-
-		const textEl = this.reviewPromptBanner.createEl('span', {
-			cls: 'local-llm-review-prompt-text',
-			text: message
-		});
-		textEl.setAttribute('role', 'status');
-
-		const actionContainer = this.reviewPromptBanner.createEl('div', {
-			cls: 'local-llm-review-prompt-actions'
-		});
-
-		const reviewButton = actionContainer.createEl('button', {
-			text: 'Leave a review',
-			cls: 'mod-cta',
-			attr: { type: 'button' }
-		});
-		reviewButton.addEventListener('click', async () => {
-			if (typeof this.plugin.markReviewLinkClicked === 'function') {
-				await this.plugin.markReviewLinkClicked();
-			}
-			window.open(reviewUrl, '_blank');
-			this.reviewPromptBanner.empty();
-			this.reviewPromptBanner.removeClass('local-llm-review-prompt-visible');
-			this.reviewPromptBanner.addClass('local-llm-review-prompt-hidden');
-		});
-
-		const dismissButton = actionContainer.createEl('button', {
-			text: 'Dismiss',
-			attr: { type: 'button' }
-		});
-		dismissButton.addEventListener('click', () => {
-			this.reviewPromptBanner.empty();
-			this.reviewPromptBanner.removeClass('local-llm-review-prompt-visible');
-			this.reviewPromptBanner.addClass('local-llm-review-prompt-hidden');
-		});
-	}
-
 	private async sendMessage() {
 		const content = this.inputElement.value.trim();
 		if (!content) return;
+		if (this.historyOpen) this.hideHistory();
 
 		// If already streaming, queue this message or handle it differently
 		if (this.isStreaming) {
@@ -388,6 +357,10 @@ export class ChatView extends ItemView {
 			assistantMessage.usedNotes = notesRead.size > 0 ? [...notesRead.values()] : undefined;
 			await this.finalizeStreamingMessage(assistantMessage.id);
 			finish();
+			this.saveChat();
+			if (typeof this.plugin.recordSuccessfulChat === 'function') {
+				void this.plugin.recordSuccessfulChat();
+			}
 		} catch (error) {
 			closeThinking();
 			await renderChain;
@@ -398,6 +371,7 @@ export class ChatView extends ItemView {
 					streamingMessage.isStreaming = false;
 					await this.finalizeStreamingMessage(streamingMessage.id);
 				}
+				this.saveChat();
 			} else {
 				this.handleStreamingError(assistantMessage.id, error);
 			}
@@ -944,7 +918,11 @@ export class ChatView extends ItemView {
 			attr: { 'data-message-id': message.id }
 		});
 
-		const contentEl = messageEl.createEl('div', {
+		// Only the user's messages sit in a bubble; assistant replies are inline text.
+		const contentParent = message.role === 'user'
+			? messageEl.createEl('div', { cls: 'local-llm-message-bubble' })
+			: messageEl;
+		const contentEl = contentParent.createEl('div', {
 			cls: 'local-llm-message-content'
 		});
 
@@ -994,28 +972,6 @@ export class ChatView extends ItemView {
 		} else {
 			// Plain text for user messages
 			contentEl.setText(message.content);
-		}
-
-		// Add copy button for all non-streaming messages (both user and assistant)
-		if (!message.isStreaming) {
-			const copyButton = messageEl.createEl('button', {
-				cls: 'local-llm-copy-button',
-				attr: { 'aria-label': 'Copy message content', 'type': 'button' }
-			});
-			setIcon(copyButton, 'copy');
-
-			copyButton.addEventListener('click', async () => {
-				await navigator.clipboard.writeText(message.content);
-
-				// Show success feedback
-				setIcon(copyButton, 'check');
-				copyButton.classList.add('copied');
-
-				setTimeout(() => {
-					setIcon(copyButton, 'copy');
-					copyButton.classList.remove('copied');
-				}, 1000);
-			});
 		}
 
 		// Show used notes information for assistant messages
@@ -1089,7 +1045,34 @@ export class ChatView extends ItemView {
 			});
 		}
 
-		const timestampEl = messageEl.createEl('div', {
+		// Actions row under the message. Its height is always reserved, so showing the
+		// user bubble's copy button on hover never shifts the layout.
+		const actionsEl = messageEl.createEl('div', {
+			cls: 'local-llm-message-actions'
+		});
+
+		if (!message.isStreaming) {
+			const copyButton = actionsEl.createEl('button', {
+				cls: 'clickable-icon local-llm-copy-button',
+				attr: { 'aria-label': 'Copy message', 'type': 'button' }
+			});
+			setIcon(copyButton, 'copy');
+
+			copyButton.addEventListener('click', async () => {
+				await navigator.clipboard.writeText(message.content);
+
+				// Brief confirmation, then back to the copy icon.
+				setIcon(copyButton, 'check');
+				copyButton.classList.add('copied');
+
+				setTimeout(() => {
+					setIcon(copyButton, 'copy');
+					copyButton.classList.remove('copied');
+				}, 1000);
+			});
+		}
+
+		const timestampEl = actionsEl.createEl('span', {
 			cls: 'local-llm-message-timestamp'
 		});
 
@@ -1137,18 +1120,217 @@ export class ChatView extends ItemView {
 
 		// Clear all messages and the agent's conversation
 		this.chatAgent.reset();
-		this.messages = [];
-		this.messageContainer.empty();
-		this.streamingThinkingState.clear();
-		this.thinkingViewState.clear();
-		this.pendingStreamingRender.clear();
-		this.streamingRenderInFlight.clear();
+		this.clearChatDisplay();
+		this.chatId = null;
+		this.chatCreatedAt = null;
+		this.hideHistory();
 
 		// Add new welcome message, checking the server the settings point at now
 		this.updateLLMServiceFromSettings();
 		await this.showWelcome();
 
 		// Clear input field
+		this.inputElement.value = '';
+		this.inputElement.focus();
+	}
+
+	private clearChatDisplay(): void {
+		this.messages = [];
+		this.messageContainer.empty();
+		this.streamingThinkingState.clear();
+		this.thinkingViewState.clear();
+		this.pendingStreamingRender.clear();
+		this.streamingRenderInFlight.clear();
+	}
+
+	/** Writes this chat to the history (in the background), when saving is on and something was asked. */
+	private saveChat(): void {
+		const history = this.plugin.chatHistory;
+		if (!history || this.plugin.settings.saveChatHistory === false) return;
+		const messages: SavedChatMessage[] = this.messages
+			.filter(m => m.id !== 'welcome' && !m.isStreaming)
+			.map(m => ({
+				id: m.id,
+				role: m.role,
+				content: m.content,
+				timestamp: m.timestamp.toISOString(),
+				...(m.usedNotes ? { usedNotes: m.usedNotes } : {}),
+				...(m.thinkingBlocks ? { thinkingBlocks: m.thinkingBlocks } : {})
+			}));
+		if (!messages.some(m => m.role === 'user')) return;
+		const now = new Date();
+		this.chatId ??= newChatId(now);
+		this.chatCreatedAt ??= now.toISOString();
+		const chat: SavedChat = {
+			version: 1,
+			id: this.chatId,
+			title: chatTitle(messages),
+			createdAt: this.chatCreatedAt,
+			updatedAt: now.toISOString(),
+			messages,
+			agentMessages: [...(this.chatAgent.messages ?? [])]
+		};
+		this.historySaved = this.historySaved
+			.then(async () => {
+				await history.save(chat);
+				await history.prune(MAX_SAVED_CHATS);
+			})
+			.catch(error => LoggingUtility.error('Could not save the chat:', error));
+	}
+
+	private get historyOpen(): boolean {
+		return this.historyPanel.classList.contains('local-llm-history-visible');
+	}
+
+	private hideHistory(): void {
+		this.historyPanel.empty();
+		this.historyPanel.removeClass('local-llm-history-visible');
+		this.historyPanel.addClass('local-llm-history-hidden');
+		this.messageContainer.removeClass('local-llm-messages-hidden');
+	}
+
+	private async toggleHistory(): Promise<void> {
+		if (this.historyOpen) {
+			this.hideHistory();
+			return;
+		}
+		await this.showHistory();
+	}
+
+	/** Lists saved chats in the pane; clicking one reopens it. */
+	private async showHistory(): Promise<void> {
+		let chats: ChatSummary[] = [];
+		try {
+			await this.historySaved;
+			await this.plugin.applyChatRetention?.();
+			chats = (await this.plugin.chatHistory?.list()) ?? [];
+		} catch (error) {
+			LoggingUtility.error('Could not list saved chats:', error);
+		}
+		this.historyPanel.empty();
+		this.historyPanel.removeClass('local-llm-history-hidden');
+		this.historyPanel.addClass('local-llm-history-visible');
+		this.messageContainer.addClass('local-llm-messages-hidden');
+
+		const top = this.historyPanel.createEl('div', { cls: 'local-llm-history-top' });
+		top.createEl('span', { cls: 'local-llm-history-heading', text: 'Saved chats' });
+		const actions = top.createEl('div', { cls: 'local-llm-history-actions' });
+		if (chats.length > 0) this.addClearAllButton(actions);
+		const back = actions.createEl('button', { cls: 'local-llm-history-back', text: 'Back to chat', attr: { type: 'button' } });
+		back.addEventListener('click', () => this.hideHistory());
+
+		const keep = this.historyPanel.createEl('label', { cls: 'local-llm-history-retention' });
+		keep.createEl('span', { text: 'Keep chats for' });
+		const select = keep.createEl('select', { cls: 'dropdown local-llm-history-retention-select' });
+		for (const choice of CHAT_RETENTION_CHOICES) select.createEl('option', { text: choice.label }).value = String(choice.days);
+		select.value = String(this.plugin.settings.chatRetentionDays ?? 0);
+		select.addEventListener('change', async () => {
+			const removed = await this.plugin.setChatRetention(Number(select.value));
+			if (removed > 0) new Notice(`Deleted ${removed} saved chat${removed === 1 ? '' : 's'} older than that.`);
+			await this.showHistory();
+		});
+
+		if (chats.length === 0) {
+			this.historyPanel.createEl('div', {
+				cls: 'local-llm-history-empty',
+				text: this.plugin.settings.saveChatHistory === false
+					? 'Saving chats is turned off in settings.'
+					: 'No saved chats yet. Chats are saved here after the first answer.'
+			});
+			return;
+		}
+
+		const list = this.historyPanel.createEl('div', { cls: 'local-llm-history-list' });
+		for (const chat of chats) {
+			const row = list.createEl('div', {
+				cls: 'local-llm-history-item' + (chat.id === this.chatId ? ' is-current' : ''),
+				attr: { 'data-chat-id': chat.id }
+			});
+			const open = row.createEl('button', { cls: 'local-llm-history-open', attr: { type: 'button', 'aria-label': `Open chat: ${chat.title}` } });
+			open.createEl('div', { cls: 'local-llm-history-title', text: chat.title });
+			open.createEl('div', {
+				cls: 'local-llm-history-meta',
+				text: `${new Date(chat.updatedAt).toLocaleString()} · ${chat.messageCount} message${chat.messageCount === 1 ? '' : 's'}`
+			});
+			open.addEventListener('click', async () => {
+				await this.resumeChat(chat.id);
+			});
+			const remove = row.createEl('button', { cls: 'local-llm-history-delete', attr: { type: 'button', 'aria-label': 'Delete this chat' } });
+			setIcon(remove, 'trash');
+			remove.addEventListener('click', async () => {
+				try {
+					await this.plugin.chatHistory.delete(chat.id);
+				} catch (error) {
+					LoggingUtility.error('Could not delete the chat:', error);
+				}
+				if (chat.id === this.chatId) {
+					this.chatId = null;
+					this.chatCreatedAt = null;
+				}
+				await this.showHistory();
+			});
+		}
+	}
+
+	/** "Delete all" in the History header. Needs a second click, so one stray click can't wipe the history. */
+	private addClearAllButton(parent: HTMLElement): void {
+		const clearAll = parent.createEl('button', {
+			cls: 'local-llm-history-clear mod-warning',
+			text: 'Delete all',
+			attr: { type: 'button', 'aria-label': 'Delete all saved chats' }
+		});
+		let armed = false;
+		clearAll.addEventListener('click', async () => {
+			if (!armed) {
+				armed = true;
+				clearAll.setText('Click again to delete');
+				window.setTimeout(() => {
+					if (!armed) return;
+					armed = false;
+					clearAll.setText('Delete all');
+				}, 4000);
+				return;
+			}
+			armed = false;
+			let removed = 0;
+			try {
+				removed = await this.plugin.chatHistory.clear();
+			} catch (error) {
+				LoggingUtility.error('Could not delete saved chats:', error);
+			}
+			// The open chat was one of them, so keep it from being saved again under its old id.
+			this.chatId = null;
+			this.chatCreatedAt = null;
+			new Notice(removed === 0 ? 'No saved chats to delete.' : `Deleted ${removed} saved chat${removed === 1 ? '' : 's'}.`);
+			await this.showHistory();
+		});
+	}
+
+	/** Reopens a saved chat: shows its messages and gives the agent its earlier context. */
+	async resumeChat(id: string): Promise<void> {
+		const chat = await this.plugin.chatHistory?.load(id);
+		if (!chat) {
+			new Notice('That chat could not be opened.', 3000);
+			await this.showHistory();
+			return;
+		}
+		if (this.isStreaming) this.stopStreaming();
+		this.welcomeCheck++;
+		this.clearChatDisplay();
+		this.chatAgent.restore(chat.agentMessages as AgentMessage[]);
+		this.chatId = chat.id;
+		this.chatCreatedAt = chat.createdAt;
+		this.hideHistory();
+		for (const saved of chat.messages) {
+			await this.addMessage({
+				id: saved.id,
+				role: saved.role,
+				content: saved.content,
+				timestamp: new Date(saved.timestamp),
+				...(saved.usedNotes ? { usedNotes: saved.usedNotes } : {}),
+				...(saved.thinkingBlocks ? { thinkingBlocks: saved.thinkingBlocks } : {})
+			});
+		}
 		this.inputElement.value = '';
 		this.inputElement.focus();
 	}

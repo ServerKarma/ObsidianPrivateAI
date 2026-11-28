@@ -24,8 +24,9 @@ const stubUnusedPiProviders = {
 			if (!args.importer.replace(/\\/g, '/').includes('@mariozechner/pi-ai/dist/providers/')) return undefined;
 			return { path: args.path, namespace: 'pi-provider-stub' };
 		});
-		build.onLoad({ filter: /.*/, namespace: 'pi-provider-stub' }, (args) => ({
-			contents: `const fail = () => { throw new Error(${JSON.stringify('Provider ' + args.path + ' is not bundled in Private AI')}); };
+		// The stub is a fixed string with nothing interpolated, so no import path ends up in generated code.
+		build.onLoad({ filter: /.*/, namespace: 'pi-provider-stub' }, () => ({
+			contents: `const fail = () => { throw new Error('This cloud provider is not bundled in Private AI. Use a local OpenAI-compatible server.'); };
 export const streamAnthropic = fail, streamSimpleAnthropic = fail, streamAzureOpenAIResponses = fail, streamSimpleAzureOpenAIResponses = fail,
 streamGoogle = fail, streamSimpleGoogle = fail, streamGoogleVertex = fail, streamSimpleGoogleVertex = fail, streamMistral = fail, streamSimpleMistral = fail,
 streamOpenAICodexResponses = fail, streamSimpleOpenAICodexResponses = fail, streamOpenAIResponses = fail, streamSimpleOpenAIResponses = fail;`,
